@@ -17,6 +17,7 @@ import { artifactFingerprint, waitForStableChange } from '../src/uni'
 import type { DomBaseline } from '../src/trigger'
 import { removeForwards, waitForMarker, formatProbeResults, normalizeTargetTitle, isFresh, appPid, waitForAppPid } from '../src/trigger'
 import { acquireLock, hasLock, isProcessAlive, lockOwner } from '../src/lock'
+import { parseArgs, packageVersion } from '../src/cli'
 import { shellQuote, assertPackageName, assertAppid, assertRelPath, assertPagePath, assertPageQuery, buildPageUrl, splitPageUrl } from '../src/validate'
 
 /** 测试用的 DOM 基线：marked 字段不参与 waitForMarker / isFresh 的判定 */
@@ -1199,4 +1200,19 @@ test('waitForAppPid gives up with a clear message', async () => {
     () => waitForAppPid(adb, 'com.example.app', { timeoutMs: 20, intervalMs: 1 }),
     /did not come up within 20ms/
   )
+})
+
+test('parseArgs recognises --version and -v', () => {
+  assert.equal(parseArgs(['--version']).version, true)
+  assert.equal(parseArgs(['-v']).version, true)
+  assert.equal(parseArgs([]).version, false)
+  assert.deepEqual(parseArgs(['-v']).rest, [])
+  // --version 不能被当成平台参数传给 uni CLI
+  assert.deepEqual(parseArgs(['--version', 'app-plus']).rest, ['app-plus'])
+})
+
+test('packageVersion matches the package manifest', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+  assert.match(pkg.version, /^\d+\.\d+\.\d+/)
+  assert.equal(packageVersion(), pkg.version)
 })

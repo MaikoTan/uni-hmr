@@ -1,6 +1,6 @@
 {
   "name": "uni-hmr",
-  "version": "0.1.0-rc.4",
+  "version": "0.1.0-rc.5",
   "description": "Hot update tool for uni-app development: automatic build, incremental sync to a real device and runtime refresh",
   "type": "module",
   "license": "LGPL-3.0-only",

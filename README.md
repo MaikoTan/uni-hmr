@@ -44,6 +44,8 @@ uni-hmr launch --page "/pages/detail/detail?id=42"   # cold start on a page
 | `--no-trigger` | Do not send the refresh command after a sync | — |
 | `--no-probe` | Do not run the CDP verification after a refresh | — |
 | `--full` | Force a full tar sync | full on the first run, md5 diffing afterwards |
+| `-v`, `--version` | Print the version | — |
+| `-h`, `--help` | Print the usage | — |
 
 ### Wireless debugging
 

@@ -15,7 +15,7 @@
  *   launch           cold start the app, optionally landing on --page
  */
 import path from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import {
   createAdb,
   findAdb,
@@ -91,7 +91,19 @@ export interface CliOptions {
   noProbe: boolean
   full: boolean
   help: boolean
+  version: boolean
   rest: string[]
+}
+
+/**
+ * 读取自身 package.json 的版本号。
+ *
+ * 打包后 dist/uni-hmr.mjs 与源码 src/cli.ts 都位于包根目录下一层，
+ * 所以 `../package.json` 在两种形态下都指向同一个文件。
+ */
+export function packageVersion(): string {
+  const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+  return (JSON.parse(raw) as { version: string }).version
 }
 
 export function parseArgs(argv: string[]): CliOptions {
@@ -114,6 +126,7 @@ export function parseArgs(argv: string[]): CliOptions {
     noProbe: false,
     full: false,
     help: false,
+    version: false,
     rest: [],
   }
   const rest: string[] = []
@@ -138,6 +151,7 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (a === '--no-probe') opts.noProbe = true
     else if (a === '--full') opts.full = true
     else if (a === '--help' || a === '-h') opts.help = true
+    else if (a === '--version' || a === '-v' || a === '-V') opts.version = true
     else rest.push(a)
   }
   opts.rest = rest
@@ -168,6 +182,8 @@ Options:
   --no-trigger        do not send the refresh command after a sync
   --no-probe          do not run the CDP verification after a refresh
   --full              force a full tar sync (the default is a full sync first, then md5 diffing)
+  -v, --version       print the version
+  -h, --help          print this help
 
 Sub-commands:
   doctor    environment pre-flight check
@@ -744,6 +760,10 @@ async function cmdWatch(opts: CliOptions, cwd: string): Promise<void> {
 
 export async function run(argv: string[]): Promise<void> {
   const opts = parseArgs(argv)
+  if (opts.version) {
+    console.log(packageVersion())
+    return
+  }
   if (opts.help) {
     usage()
     return
