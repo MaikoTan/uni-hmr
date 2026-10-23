@@ -11,6 +11,11 @@ yarn test        # node --test with the tsx loader
 The package is written in TypeScript (5.x) and bundled by `tsdown`; Yarn manages
 the dependencies. `dist/` is generated, it is not checked in.
 
+`.yarnrc.yml` pins `compressionLevel` on purpose: the effective value is hashed
+into `__metadata.cacheKey` of `yarn.lock`, so a differing value in a global
+`~/.yarnrc.yml` would rewrite the lockfile locally and make `yarn install
+--immutable` fail in CI.
+
 ## Layout
 
 ```
