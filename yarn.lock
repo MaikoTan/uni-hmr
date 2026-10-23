@@ -983,7 +983,7 @@ __metadata:
     tsx: "npm:^4.23.15"
     typescript: "npm:~5.9.3"
   bin:
-    uni-hmr: ./bin/uni-hmr.mjs
+    uni-hmr: dist/uni-hmr.mjs
   languageName: unknown
   linkType: soft
 

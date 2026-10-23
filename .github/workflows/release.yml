@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - package.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  # npm trusted publishing 用 OIDC 换取短期发布令牌，无需 NPM_TOKEN
+  id-token: write
+
+# 同一时间只允许一个发布任务，避免并发重复发布
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      # trusted publishing 要求 npm CLI >= 11.5.1（Node 22.14+ 亦可）
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Typecheck
+        run: yarn typecheck
+
+      - name: Test
+        run: yarn test
+
+      - name: Build
+        run: yarn build
+
+      # 版本号未变化（npm 上已存在该版本）时跳过发布
+      - name: Resolve version
+        id: version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # 预发布版本走 next dist-tag，正式版本才更新 latest
+          if [[ "$version" == *-* ]]; then
+            echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+          if npm view "uni-hmr@$version" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "uni-hmr@$version is already on npm, skipping"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "uni-hmr@$version will be published"
+          fi
+
+      - name: Publish to npm
+        if: steps.version.outputs.published == 'false'
+        run: npm publish --access public --tag "${{ steps.version.outputs.dist_tag }}"
+
+      - name: Tag and create the GitHub release
+        if: steps.version.outputs.published == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "tag $tag already exists, skipping"
+            exit 0
+          fi
+          git tag "$tag"
+          git push origin "$tag"
+          gh release create "$tag" --title "$tag" --generate-notes
