@@ -1,0 +1,21 @@
+{
+  "name": "uni-hmr",
+  "version": "0.1.0",
+  "description": "Hot update tool for uni-app development: automatic build, incremental sync to a real device and runtime refresh",
+  "type": "module",
+  "license": "LGPL-3.0-only",
+  "bin": "./bin/uni-hmr.mjs",
+  "files": [
+    "bin",
+    "src",
+    "docs",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\""
+  }
+}
