@@ -16,6 +16,7 @@
  *      means the rebuild finished, which sidesteps the stdout de-duplication.
  */
 import { spawn } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 
@@ -33,9 +34,9 @@ export const BUILD_FAILED = /DONE\s+Build failed\./
  * The cost is one readdir plus a few stat calls (< 10ms), far cheaper than a
  * full md5 pass.
  */
-export function artifactFingerprint(dir) {
+export function artifactFingerprint(dir: string): string {
   if (!existsSync(dir)) return 'missing'
-  const parts = []
+  const parts: string[] = []
   let entries
   try {
     entries = readdirSync(dir, { withFileTypes: true })
@@ -59,17 +60,31 @@ export function artifactFingerprint(dir) {
   return parts.join('|')
 }
 
-/**
- * Start `uni dev` in watch mode.
- *
- * @param {object} opts
- * @param {string} opts.bin     path to the uni CLI
- * @param {string} opts.cwd     project directory
- * @param {string[]} opts.args  arguments forwarded to uni
- * @param {boolean} opts.passthrough forward the uni stdout to the terminal
- * @param {(line:string)=>void} [opts.onLine]
- */
-export function startUni(opts) {
+export interface StartUniOptions {
+  /** path to the uni CLI */
+  bin: string
+  /** project directory */
+  cwd: string
+  /** arguments forwarded to uni */
+  args: string[]
+  /** forward the uni stdout to the terminal */
+  passthrough?: boolean
+  onLine?: (line: string) => void
+  env?: NodeJS.ProcessEnv
+}
+
+export interface UniProcess {
+  child: ChildProcess
+  /** Whether the build completion signal has been seen (stdout based, only reliable the first time). */
+  readonly sawDone: boolean
+  readonly sawFailed: boolean
+  /** Wait for the first build completion signal; reject on failure or process exit. */
+  waitFirstBuild(timeoutMs?: number): Promise<void>
+  stop(): void
+}
+
+/** Start `uni dev` in watch mode. */
+export function startUni(opts: StartUniOptions): UniProcess {
   const { bin, cwd, args, passthrough = true, env = process.env } = opts
 
   const child = spawn(process.execPath, [bin, ...args], {
@@ -86,9 +101,9 @@ export function startUni(opts) {
   let sawDone = false
   let sawFailed = false
   /** Additional line listeners (registered by waitFirstBuild) */
-  const listeners = new Set()
+  const listeners = new Set<(line: string) => void>()
 
-  const handle = (chunk) => {
+  const handle = (chunk: Buffer | string): void => {
     const text = chunk.toString()
     buffer += text
     let idx
@@ -103,28 +118,30 @@ export function startUni(opts) {
     }
   }
 
-  child.stdout.on('data', handle)
-  child.stderr.on('data', handle)
+  child.stdout?.on('data', handle)
+  child.stderr?.on('data', handle)
 
   return {
     child,
-    /** Whether the build completion signal has been seen (stdout based, only reliable the first time). */
     get sawDone() {
       return sawDone
     },
     get sawFailed() {
       return sawFailed
     },
-    /** Wait for the first build completion signal; reject on failure or process exit. */
-    waitFirstBuild(timeoutMs = 15 * 60 * 1000) {
+    waitFirstBuild(timeoutMs = 15 * 60 * 1000): Promise<void> {
       return new Promise((resolve, reject) => {
         if (sawDone) return resolve()
         if (sawFailed) return reject(new Error('The uni CLI reported a build failure'))
         const timer = setTimeout(() => {
           cleanup()
-          reject(new Error(`Timed out waiting for the first build to complete (${Math.round(timeoutMs / 1000)}s)`))
+          reject(
+            new Error(
+              `Timed out waiting for the first build to complete (${Math.round(timeoutMs / 1000)}s)`
+            )
+          )
         }, timeoutMs)
-        const onLine = (line) => {
+        const onLine = (line: string): void => {
           if (BUILD_FAILED.test(line)) {
             cleanup()
             reject(new Error('The uni CLI reported a build failure'))
@@ -133,11 +150,11 @@ export function startUni(opts) {
             resolve()
           }
         }
-        const onExit = (code) => {
+        const onExit = (code: number | null): void => {
           cleanup()
           reject(new Error(`The uni CLI process exited (exit code ${code})`))
         }
-        function cleanup() {
+        function cleanup(): void {
           clearTimeout(timer)
           listeners.delete(onLine)
           child.off('exit', onExit)
@@ -146,12 +163,24 @@ export function startUni(opts) {
         child.once('exit', onExit)
       })
     },
-    stop() {
+    stop(): void {
       try {
         child.kill('SIGTERM')
       } catch {}
     },
   }
+}
+
+export interface WaitForStableChangeOptions {
+  /** poll interval */
+  intervalMs?: number
+  /** how long the fingerprint must stay unchanged */
+  stableMs?: number
+  /** upper bound on the settle wait (prevents a hang) */
+  maxSettleMs?: number
+  /** overall timeout */
+  timeoutMs?: number
+  onPoll?: (fp: string) => void
 }
 
 /**
@@ -173,16 +202,15 @@ export function startUni(opts) {
  *   is an update), then wait until it stays unchanged for `stableMs` (writing
  *   has finished), and only then consider the build complete.
  *
- * @param {string} dir artifact directory
- * @param {string} baseline initial fingerprint
- * @param {object} opts
- * @param {number} opts.intervalMs  poll interval
- * @param {number} opts.stableMs     how long the fingerprint must stay unchanged
- * @param {number} opts.maxSettleMs  upper bound on the settle wait (prevents a hang)
- * @param {number} opts.timeoutMs    overall timeout
- * @returns {Promise<string>} the settled fingerprint
+ * @param dir artifact directory
+ * @param baseline initial fingerprint
+ * @returns the settled fingerprint
  */
-export function waitForStableChange(dir, baseline, opts = {}) {
+export function waitForStableChange(
+  dir: string,
+  baseline: string,
+  opts: WaitForStableChangeOptions = {}
+): Promise<string> {
   const {
     intervalMs = 400,
     stableMs = 1000,

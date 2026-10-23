@@ -3,7 +3,7 @@
 ## Protection against command injection
 
 Every command that is passed to `adb shell` (the device side runs `sh`) goes
-through `src/validate.mjs`:
+through `src/validate.ts`:
 
 | Validation function | Purpose | Rule |
 |---|---|---|
@@ -14,9 +14,9 @@ through `src/validate.mjs`:
 | `assertPagePath(page)` | uni-app page path (`--page`, the inline query is stripped first) | At least two segments, each `/^[A-Za-z0-9_-]+$/`, a leading slash is stripped |
 | `assertPageQuery(query)` | Page query string (`--query` or the part after `?` in `--page`) | `/^[A-Za-z0-9._~%&=+,:@/-]*$/` (typo guard, not a shell boundary) |
 
-Covered interpolation points: `sync.mjs` (`remoteManifest` / `pushIncremental` /
-`removeRemote` / `pushFullTar`), `cli.mjs` (`mkdir -p` / `ls -d`),
-`project.mjs` (`lookupPackageByAppid`), `trigger.mjs` (`pidof`, which
+Covered interpolation points: `sync.ts` (`remoteManifest` / `pushIncremental` /
+`removeRemote` / `pushFullTar`), `cli.ts` (`mkdir -p` / `ls -d`),
+`project.ts` (`lookupPackageByAppid`), `trigger.ts` (`pidof`, which
 previously had **no quoting at all**).
 
 The allow-list character set was derived from the real build output: the dist
@@ -146,8 +146,12 @@ exit** (`SIGINT` / `SIGTERM` / `SIGHUP` / normal exit).
 
 - **Zero runtime dependencies** (the `dependencies` field is empty), only Node
   built-in modules are used.
-- The development dependencies are the Node built-in `node:test` / `node:assert`.
-- `bin/uni-hmr.mjs` has the permissions `0755` and `#!/usr/bin/env node`.
+- The test runner is the Node built-in `node:test` / `node:assert`; the only
+  development dependencies are TypeScript, `tsdown` (the bundler) and `tsx` (the
+  TS loader used by the tests). The published package ships only the bundled
+  `dist/` output.
+- `dist/uni-hmr.mjs` is built from `bin/uni-hmr.ts`, has the permissions `0755`
+  and keeps the `#!/usr/bin/env node` shebang.
 - On the host side every call uses the array form of `execFileSync` /
   `spawn(process.execPath, [...])`, so the **host shell is never involved**;
   only the device side runs `sh`, and every tainted value that reaches it goes
@@ -155,7 +159,7 @@ exit** (`SIGINT` / `SIGTERM` / `SIGHUP` / normal exit).
 
 ## The CDP expression injection
 
-The `probe()` and `navigateToPage()` functions in `trigger.mjs` serialise
+The `probe()` and `navigateToPage()` functions in `trigger.ts` serialise
 the markers and the page url with `JSON.stringify()` before interpolating them
 into `Runtime.evaluate`, so the content is escaped correctly and there is **no
 expression injection**.

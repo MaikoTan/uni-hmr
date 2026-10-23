@@ -3,13 +3,13 @@
 ```
   ┌─ uni dev watch (node .../vite-plugin-uni/bin/uni.js -p app-plus)
   │      ↓ writes to dist/dev/app
-  │   fingerprint polling + time window debounce    ← src/uni.mjs
+  │   fingerprint polling + time window debounce    ← src/uni.ts
   │      ↓ "the build is complete"
-  │   md5 diff → adb push                           ← src/sync.mjs
+  │   md5 diff → adb push                           ← src/sync.ts
   │      ↓
-  │   snc:script debugRefresh                       ← src/trigger.mjs
+  │   snc:script debugRefresh                       ← src/trigger.ts
   │      ↓
-  │   CDP probe verifies that the marker is present  ← src/trigger.mjs
+  │   CDP probe verifies that the marker is present  ← src/trigger.ts
   └──────────────────────────────────────────────────────────
 ```
 

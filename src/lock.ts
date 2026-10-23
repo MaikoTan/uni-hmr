@@ -17,37 +17,40 @@
 import { readFileSync, writeFileSync, unlinkSync, existsSync, lstatSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { ensureStateDir } from './sync.mjs'
+import { ensureStateDir } from './sync'
 
 /** The lock directory, next to the managed manifest (0700). */
 const LOCK_DIR = path.join(os.tmpdir(), 'uni-hmr')
 
-/**
- * Check whether a process is still alive.
- *
- * @param {number} pid
- * @returns {boolean}
- */
-export function isProcessAlive(pid) {
+export interface LockOptions {
+  /** Overrides the lock directory (tests) */
+  dir?: string
+}
+
+export interface LockHandle {
+  path: string
+  release: () => void
+}
+
+/** Check whether a process is still alive. */
+export function isProcessAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false
   try {
     process.kill(pid, 0)
     return true
   } catch (e) {
     // EPERM means the process exists but belongs to another user
-    return !!(e && e.code === 'EPERM')
+    return (e as NodeJS.ErrnoException)?.code === 'EPERM'
   }
 }
 
 /**
  * Acquire the lock for a device scope.
  *
- * @param {string} key the device scope (already sanitized)
- * @param {{dir?: string}} [opts] `dir` overrides the lock directory (tests)
- * @returns {{path: string, release: () => void}} the lock handle
- * @throws {Error} when the lock is held by a living process
+ * @param key the device scope (already sanitized)
+ * @throws when the lock is held by a living process
  */
-export function acquireLock(key, opts = {}) {
+export function acquireLock(key: string, opts: LockOptions = {}): LockHandle {
   const dir = opts.dir || LOCK_DIR
   // The same hardening as for the managed manifest: the directory may not be
   // a symlink and it has to be private
@@ -71,7 +74,7 @@ export function acquireLock(key, opts = {}) {
         },
       }
     } catch (e) {
-      if (!e || e.code !== 'EEXIST') throw e
+      if ((e as NodeJS.ErrnoException)?.code !== 'EEXIST') throw e
       // The lock exists -> check whether the owner is still alive
       let owner = NaN
       try {
@@ -96,14 +99,8 @@ export function acquireLock(key, opts = {}) {
   throw new Error(`Could not acquire the uni-hmr lock: ${file}`)
 }
 
-/**
- * Read the pid of the current lock owner.
- *
- * @param {string} key the device scope (already sanitized)
- * @param {{dir?: string}} [opts] `dir` overrides the lock directory (tests)
- * @returns {number|null}
- */
-export function lockOwner(key, opts = {}) {
+/** Read the pid of the current lock owner. */
+export function lockOwner(key: string, opts: LockOptions = {}): number | null {
   const file = path.join(opts.dir || LOCK_DIR, `${key}.lock`)
   try {
     if (!lstatSync(file).isFile()) return null
@@ -114,13 +111,7 @@ export function lockOwner(key, opts = {}) {
   }
 }
 
-/**
- * Check whether a lock file exists for a device scope.
- *
- * @param {string} key the device scope (already sanitized)
- * @param {{dir?: string}} [opts] `dir` overrides the lock directory (tests)
- * @returns {boolean}
- */
-export function hasLock(key, opts = {}) {
+/** Check whether a lock file exists for a device scope. */
+export function hasLock(key: string, opts: LockOptions = {}): boolean {
   return existsSync(path.join(opts.dir || LOCK_DIR, `${key}.lock`))
 }

@@ -16,12 +16,67 @@
  * every other part of this file works the same way for it.
  */
 import { execFileSync } from 'node:child_process'
+import type { ExecFileSyncOptionsWithStringEncoding, StdioOptions } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+/** One entry of `adb devices -l`. */
+export interface DeviceInfo {
+  serial: string
+  state: string
+  model?: string
+  product?: string
+  device?: string
+  transportId?: string
+  [key: string]: string | undefined
+}
+
+export interface DeviceList {
+  online: DeviceInfo[]
+  offline: DeviceInfo[]
+}
+
+export interface AdbRawOptions {
+  encoding?: BufferEncoding
+  stdio?: StdioOptions
+  timeout?: number
+  input?: string
+}
+
+/** Minimal surface used by the modules that only run shell commands. */
+export interface ShellAdb {
+  shell(cmd: string): string
+}
+
+/** Minimal surface used by the modules that push files. */
+export interface PushAdb {
+  push(src: string, dest: string): unknown
+}
+
+/** Minimal surface used by the modules that create port forwards. */
+export interface ForwardAdb {
+  forward(args: string[], opts?: AdbRawOptions): unknown
+}
+
+/** An adb wrapper bound to one specific device. */
+export interface Adb extends ShellAdb, PushAdb, ForwardAdb {
+  serial: string
+  binPath: string
+  raw(args: string[], opts?: AdbRawOptions): string
+}
+
+/** Shape of the errors thrown by execFileSync. */
+interface ExecFileError {
+  message: string
+  stderr?: string | Buffer
+  stdout?: string | Buffer
+  killed?: boolean
+  signal?: string
+}
+
 /** Locate the adb executable. ADB env var first, then common SDK paths, then PATH. */
-export function findAdb(env = process.env) {
+export function findAdb(env: NodeJS.ProcessEnv = process.env): string {
   const candidates = [
     env.ADB,
     path.join(env.ANDROID_HOME || env.ANDROID_SDK_ROOT || '', 'platform-tools', 'adb'),
@@ -30,7 +85,7 @@ export function findAdb(env = process.env) {
     path.join(env.LOCALAPPDATA || '', 'Android/Sdk/platform-tools/adb'),
     '/usr/local/bin/adb',
     '/usr/bin/adb',
-  ].filter(Boolean)
+  ].filter(Boolean) as string[]
 
   for (const c of candidates) {
     if (existsSync(c)) return c
@@ -39,11 +94,14 @@ export function findAdb(env = process.env) {
 }
 
 /** Run adb synchronously and return stdout (with `\r` stripped). */
-export function adbRaw(adbPath, args, opts = {}) {
+export function adbRaw(adbPath: string, args: string[], opts: AdbRawOptions = {}): string {
   const { encoding = 'utf8', ...rest } = opts
   // execFileSync returns a Buffer when encoding is undefined; normalise to string
-  const out = execFileSync(adbPath, args, { encoding, ...rest })
-  return typeof out === 'string' ? out.replace(/\r/g, '') : out
+  const out = execFileSync(adbPath, args, {
+    encoding,
+    ...rest,
+  } as ExecFileSyncOptionsWithStringEncoding) as unknown as string | Buffer
+  return typeof out === 'string' ? out.replace(/\r/g, '') : out.toString()
 }
 
 /**
@@ -52,9 +110,9 @@ export function adbRaw(adbPath, args, opts = {}) {
  * Devices whose state is 'offline' / 'unauthorized' are collected separately so
  * that error messages can mention them.
  */
-export function parseDevices(output) {
-  const online = []
-  const offline = []
+export function parseDevices(output: string): DeviceList {
+  const online: DeviceInfo[] = []
+  const offline: DeviceInfo[] = []
   for (const rawLine of output.split('\n')) {
     const line = rawLine.trim()
     if (!line || line.startsWith('List of devices')) continue
@@ -63,7 +121,7 @@ export function parseDevices(output) {
     if (parts.length < 2) continue
     const serial = parts[0]
     const state = parts[1]
-    const info = { serial, state }
+    const info: DeviceInfo = { serial, state }
     for (const p of parts.slice(2)) {
       const idx = p.indexOf(':')
       if (idx <= 0) continue
@@ -76,7 +134,7 @@ export function parseDevices(output) {
 }
 
 /** List connected devices. */
-export function listDevices(adbPath) {
+export function listDevices(adbPath: string): DeviceList {
   const { online, offline } = parseDevices(adbRaw(adbPath, ['devices', '-l']))
   return { online, offline }
 }
@@ -88,11 +146,8 @@ export function listDevices(adbPath) {
  * The port is what distinguishes it from a USB serial: a USB serial never
  * contains a colon (the vendor serial numbers are alphanumeric), while a
  * wireless transport is always addressed by an explicit port.
- *
- * @param {string} serial
- * @returns {boolean}
  */
-export function isWirelessSerial(serial) {
+export function isWirelessSerial(serial: string): boolean {
   const s = String(serial)
   const idx = s.lastIndexOf(':')
   if (idx <= 0) return false
@@ -105,10 +160,9 @@ export function isWirelessSerial(serial) {
 /**
  * Read the **hardware** serial number of a device.
  *
- * @param {object} adb an adb wrapper bound to a specific serial
- * @returns {string|null} the hardware serial, or null when it is not available
+ * @returns the hardware serial, or null when it is not available
  */
-export function readPhysicalSerial(adb) {
+export function readPhysicalSerial(adb: ShellAdb): string | null {
   try {
     const prop = adb.shell('getprop ro.serialno').trim()
     if (!prop) return null
@@ -131,11 +185,8 @@ export function readPhysicalSerial(adb) {
  *
  * The value is validated against the format Android uses (16 hex digits),
  * which also keeps an unexpected answer out of the file name of the scope.
- *
- * @param {object} adb an adb wrapper bound to a specific serial
- * @returns {string|null}
  */
-export function readAndroidId(adb) {
+export function readAndroidId(adb: ShellAdb): string | null {
   try {
     const id = adb.shell('settings get secure android_id').trim()
     if (!id || id === 'null' || id === 'undefined') return null
@@ -170,13 +221,12 @@ export function readAndroidId(adb) {
  *
  * The prefix keeps the three sources apart, so that a device whose
  * `android_id` happens to look like a serial cannot collide with another one.
- *
- * @param {string} adbPath
- * @param {object} device the resolved device ({ serial })
- * @param {object[]} [onlineDevices] all the online devices
- * @returns {string}
  */
-export function deviceScope(adbPath, device, onlineDevices = []) {
+export function deviceScope(
+  adbPath: string,
+  device: Pick<DeviceInfo, 'serial'>,
+  onlineDevices: Pick<DeviceInfo, 'serial'>[] = []
+): string {
   const transport = device.serial
   const adb = createAdb(adbPath, transport)
 
@@ -217,12 +267,14 @@ export function deviceScope(adbPath, device, onlineDevices = []) {
  * answer (a device on another subnet, a wrong port) **blocks forever** in
  * some adb versions, which would hang the tool without any feedback.
  *
- * @param {string} adbPath
- * @param {string} address host:port of the wireless device
- * @param {number} [timeoutMs] the maximum time to wait
- * @returns {{ok: boolean, message: string}}
+ * @param address host:port of the wireless device
+ * @param timeoutMs the maximum time to wait
  */
-export function adbConnect(adbPath, address, timeoutMs = 15000) {
+export function adbConnect(
+  adbPath: string,
+  address: string,
+  timeoutMs = 15000
+): { ok: boolean; message: string } {
   if (!isWirelessSerial(address)) {
     return {
       ok: false,
@@ -235,12 +287,15 @@ export function adbConnect(adbPath, address, timeoutMs = 15000) {
       encoding: 'utf8',
       timeout: timeoutMs,
       stdio: ['ignore', 'pipe', 'pipe'],
-    }).replace(/\r/g, '').trim()
+    })
+      .replace(/\r/g, '')
+      .trim()
   } catch (e) {
-    const stderr = e.stderr ? String(e.stderr).replace(/\r/g, '').trim() : ''
-    const stdout = e.stdout ? String(e.stdout).replace(/\r/g, '').trim() : ''
-    const detail = stdout || stderr || e.message
-    if (e.killed || e.signal === 'SIGTERM') {
+    const err = e as ExecFileError
+    const stderr = err.stderr ? String(err.stderr).replace(/\r/g, '').trim() : ''
+    const stdout = err.stdout ? String(err.stdout).replace(/\r/g, '').trim() : ''
+    const detail = stdout || stderr || err.message
+    if (err.killed || err.signal === 'SIGTERM') {
       return {
         ok: false,
         message:
@@ -275,13 +330,16 @@ export function adbConnect(adbPath, address, timeoutMs = 15000) {
 /**
  * `adb pair <host:port>` (the Android 11+ wireless debugging pairing).
  *
- * @param {string} adbPath
- * @param {string} address host:pair-port of the device
- * @param {string} [code] the pairing code shown on the device
- * @param {number} [timeoutMs] the maximum time to wait
- * @returns {{ok: boolean, message: string}}
+ * @param address host:pair-port of the device
+ * @param code the pairing code shown on the device
+ * @param timeoutMs the maximum time to wait
  */
-export function adbPair(adbPath, address, code, timeoutMs = 30000) {
+export function adbPair(
+  adbPath: string,
+  address: string,
+  code?: string,
+  timeoutMs = 30000
+): { ok: boolean; message: string } {
   if (!isWirelessSerial(address)) {
     return {
       ok: false,
@@ -301,17 +359,18 @@ export function adbPair(adbPath, address, code, timeoutMs = 30000) {
     if (/successfully paired/i.test(trimmed)) return { ok: true, message: trimmed }
     return { ok: false, message: trimmed || `adb pair ${address} failed.` }
   } catch (e) {
-    const stderr = e.stderr ? String(e.stderr).replace(/\r/g, '').trim() : ''
-    const stdout = e.stdout ? String(e.stdout).replace(/\r/g, '').trim() : ''
+    const err = e as ExecFileError
+    const stderr = err.stderr ? String(err.stderr).replace(/\r/g, '').trim() : ''
+    const stdout = err.stdout ? String(err.stdout).replace(/\r/g, '').trim() : ''
     return {
       ok: false,
-      message: stdout || stderr || e.message,
+      message: stdout || stderr || err.message,
     }
   }
 }
 
 /** Format a device list for display in error messages. */
-export function formatDeviceList(devices) {
+export function formatDeviceList(devices: Pick<DeviceInfo, 'serial' | 'model' | 'product' | 'device'>[]): string {
   return devices
     .map((d, i) => {
       const model = d.model || d.product || d.device || 'unknown model'
@@ -324,12 +383,14 @@ export function formatDeviceList(devices) {
 /**
  * Resolve the target device.
  *
- * @param {string} adbPath
- * @param {string} [serial] device requested by the user via --serial
- * @param {{online: object[], offline: object[]}} [devices] a pre-fetched device list
- * @returns {{serial: string, model?: string, product?: string}}
+ * @param serial device requested by the user via --serial
+ * @param devices a pre-fetched device list
  */
-export function resolveDevice(adbPath, serial, devices) {
+export function resolveDevice(
+  adbPath: string,
+  serial?: string,
+  devices?: DeviceList
+): DeviceInfo {
   const { online, offline } = devices || listDevices(adbPath)
 
   if (online.length === 0) {
@@ -373,7 +434,7 @@ export function resolveDevice(adbPath, serial, devices) {
 }
 
 /** Wrap adb calls so that they are always targeted at a specific serial. */
-export function createAdb(adbPath, serial) {
+export function createAdb(adbPath: string, serial: string): Adb {
   const base = ['-s', serial]
 
   return {

@@ -1,6 +1,6 @@
 /**
  * uni-hmr pure function unit tests.
- * Run: node --test test/
+ * Run: yarn test (node --test with the tsx loader)
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -10,13 +10,19 @@ import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { parseDevices, formatDeviceList, resolveDevice, findAdb, isWirelessSerial, deviceScope, readPhysicalSerial, adbConnect, adbPair, createAdb, listDevices } from '../src/adb.mjs'
-import { parsePlatformArg, platformDir, extractAppid, findUniEntry } from '../src/project.mjs'
-import { parseRemoteManifest, diffManifest, listFiles, readManagedManifest, stateKey, statePath, writeManagedManifest, removeRemote, pushFullTar } from '../src/sync.mjs'
-import { artifactFingerprint, waitForStableChange } from '../src/uni.mjs'
-import { removeForwards, waitForMarker, formatProbeResults, normalizeTargetTitle, isFresh, appPid, waitForAppPid } from '../src/trigger.mjs'
-import { acquireLock, hasLock, isProcessAlive, lockOwner } from '../src/lock.mjs'
-import { shellQuote, assertPackageName, assertAppid, assertRelPath, assertPagePath, assertPageQuery, buildPageUrl, splitPageUrl } from '../src/validate.mjs'
+import { parseDevices, formatDeviceList, resolveDevice, findAdb, isWirelessSerial, deviceScope, readPhysicalSerial, adbConnect, adbPair, createAdb, listDevices } from '../src/adb'
+import { parsePlatformArg, platformDir, extractAppid, findUniEntry } from '../src/project'
+import { parseRemoteManifest, diffManifest, listFiles, readManagedManifest, stateKey, statePath, writeManagedManifest, removeRemote, pushFullTar } from '../src/sync'
+import { artifactFingerprint, waitForStableChange } from '../src/uni'
+import type { DomBaseline } from '../src/trigger'
+import { removeForwards, waitForMarker, formatProbeResults, normalizeTargetTitle, isFresh, appPid, waitForAppPid } from '../src/trigger'
+import { acquireLock, hasLock, isProcessAlive, lockOwner } from '../src/lock'
+import { shellQuote, assertPackageName, assertAppid, assertRelPath, assertPagePath, assertPageQuery, buildPageUrl, splitPageUrl } from '../src/validate'
+
+/** 测试用的 DOM 基线：marked 字段不参与 waitForMarker / isFresh 的判定 */
+function domBaseline(sig: string, title: string): DomBaseline {
+  return { 'pages/index/index': { sig, title } as any }
+}
 
 test('parseDevices parses the online / offline devices', () => {
   const out = `List of devices attached
@@ -136,7 +142,7 @@ test('artifactFingerprint returns missing when the directory does not exist', ()
 // ── Multi-device strategy (resolveDevice) ───────────────────────────────────
 
 /** Build a fake adb script whose `devices -l` prints the given content. */
-function mockAdb(devicesOutput) {
+function mockAdb(devicesOutput: string) {
   const dir = mkdtempSync(path.join(tmpdir(), 'uni-hmr-adb-'))
   const p = path.join(dir, 'adb')
   writeFileSync(p, `#!/bin/sh\nif [ "$1" = "devices" ]; then\n  cat <<'EOF'\n${devicesOutput}\nEOF\nelse\n  exit 0\nfi\n`)
@@ -159,7 +165,7 @@ test('★with several devices it fails and lists the selectable devices', () => 
   )
   assert.throws(
     () => resolveDevice(adb),
-    (e) => {
+    (e: any) => {
       // It must report that the target device cannot be determined
       assert.match(e.message, /2 Android devices are connected/)
       // It must list the serial and the model of both devices
@@ -189,7 +195,7 @@ test('★a --serial device that is not online fails and lists the selectable dev
   )
   assert.throws(
     () => resolveDevice(adb, 'NOPE999'),
-    (e) => {
+    (e: any) => {
       assert.match(e.message, /is not in the list of online devices/)
       assert.match(e.message, /AAA111/) // the selectable devices are still listed
       return true
@@ -251,10 +257,10 @@ test('★safe deletion: unmanaged files (such as the UTS SDK sources) are not af
   const { changed } = diffManifest(local, remote)
   const localSet = new Set(local.keys())
   // Only the files of the managed manifest that no longer exist locally are cleaned up
-  const removed = managed.filter((f) => !localSet.has(f))
+  const removed: string[] = managed.filter((f) => !localSet.has(f))
 
   assert.deepEqual(changed, [])
-  assert.deepEqual(removed, [])
+  assert.deepEqual(removed, [] as string[])
   // The key assertion: the unmanaged utssdk file must never be in the delete list
   assert.ok(!removed.includes('uni_modules/foo/utssdk/index.uts'))
 })
@@ -263,7 +269,7 @@ test('★safe deletion: a managed file that disappeared locally is cleaned up', 
   const local = new Map([['app-service.js', 'h1']])
   const managed = ['app-service.js', 'pages/gone.css']
   const localSet = new Set(local.keys())
-  const removed = managed.filter((f) => !localSet.has(f))
+  const removed: string[] = managed.filter((f) => !localSet.has(f))
   assert.deepEqual(removed, ['pages/gone.css'])
 })
 
@@ -333,15 +339,21 @@ test('★assertRelPath rejects path traversal and shell metacharacters', () => {
 })
 
 test('★removeRemote rejects a traversal path (no shell command is issued at all)', () => {
-  const calls = []
-  const adb = { shell: (c) => calls.push(c) }
+  const calls: string[] = []
+  const adb = { shell: (c: string) => {
+      calls.push(c)
+      return ''
+    } }
   assert.throws(() => removeRemote(adb, '/www', ['../../etc/passwd']), /Invalid artifact relative path/)
   assert.equal(calls.length, 0, 'no shell command must be issued when the validation fails')
 })
 
 test('removeRemote builds a quoted rm command for a normal path', () => {
-  const calls = []
-  const adb = { shell: (c) => calls.push(c) }
+  const calls: string[] = []
+  const adb = { shell: (c: string) => {
+      calls.push(c)
+      return ''
+    } }
   removeRemote(adb, '/www', ['pages/gone.css'])
   assert.equal(calls.length, 1)
   assert.equal(calls[0], "rm -f '/www/pages/gone.css'")
@@ -476,16 +488,16 @@ test('writeManagedManifest replaces the file atomically: no temp file is left be
 })
 
 test('removeForwards removes all the port forwards', () => {
-  const calls = []
-  const adb = { forward: (args) => calls.push(args.join(' ')) }
+  const calls: string[] = []
+  const adb = { forward: (args: string[]) => calls.push(args.join(' ')) }
   removeForwards(adb, [13131, 19222])
   assert.deepEqual(calls, ['--remove tcp:13131', '--remove tcp:19222'])
 })
 
 test('removeForwards: a failure on one port does not affect the other ports', () => {
-  const calls = []
+  const calls: string[] = []
   const adb = {
-    forward: (args) => {
+    forward: (args: string[]) => {
       if (args[1] === 'tcp:13131') throw new Error('the port does not exist')
       calls.push(args.join(' '))
     },
@@ -495,10 +507,16 @@ test('removeForwards: a failure on one port does not affect the other ports', ()
 })
 
 test('pushFullTar uses unpredictable local and device-side file names', async () => {
-  const calls = []
+  const calls: string[] = []
   const adb = {
-    shell: (c) => calls.push(c),
-    push: (src) => calls.push(`push:${path.basename(src)}`),
+    shell: (c: string) => {
+      calls.push(c)
+      return ''
+    },
+    push: (src: string) => {
+      calls.push(`push:${path.basename(src)}`)
+      return ''
+    },
   }
   const localRoot = mkdtempSync(path.join(tmpdir(), 'uni-hmr-dist-'))
   writeFileSync(path.join(localRoot, 'a.txt'), 'x')
@@ -528,7 +546,7 @@ test('writeManagedManifest tightens the permissions of an existing directory to 
 
 test('waitForMarker retries until the marker appears (the page WebView is recreated after the restart)', async () => {
   let calls = 0
-  const probeFn = async () => {
+  const probeFn = async (): Promise<any> => {
     calls++
     if (calls < 3) return [{ title: 'View', len: 0, hit: [['HMROK', false]] }]
     return [{ title: 'pages/index/index[1]', len: 12, hit: [['HMROK', true]] }]
@@ -544,7 +562,7 @@ test('waitForMarker retries until the marker appears (the page WebView is recrea
 })
 
 test('waitForMarker gives up after the timeout and reports a miss', async () => {
-  const probeFn = async () => [{ title: 'View', len: 0, hit: [['HMROK', false]] }]
+  const probeFn = async (): Promise<any> => [{ title: 'View', len: 0, hit: [['HMROK', false]] }]
   const res = await waitForMarker(19222, ['HMROK'], {
     intervalMs: 1,
     settleMs: 1,
@@ -556,7 +574,7 @@ test('waitForMarker gives up after the timeout and reports a miss', async () => 
 })
 
 test('waitForMarker rethrows the last error when no target ever appeared', async () => {
-  const probeFn = async () => {
+  const probeFn = async (): Promise<any> => {
     throw new Error('CDP did not report any target')
   }
   await assert.rejects(
@@ -582,11 +600,11 @@ test('formatProbeResults renders the hit and the miss lines', () => {
 test('waitForMarker rejects a stale hit when the DOM did not change', async () => {
   // The old page WebView is still alive during the restart and still carries
   // the previous marker -> the signature is unchanged -> the hit is stale.
-  const probeFn = async () => [
+  const probeFn = async (): Promise<any> => [
     { title: 'pages/index/index[1]', key: 'pages/index/index', sig: '100:10', hit: [['HMROK-A3', true]] },
   ]
   const res = await waitForMarker(19222, ['HMROK-A3'], {
-    baseline: { 'pages/index/index': { sig: '100:10', title: 'pages/index/index[1]' } },
+    baseline: domBaseline('100:10', 'pages/index/index[1]'),
     intervalMs: 1,
     settleMs: 1,
     timeoutMs: 20,
@@ -598,7 +616,7 @@ test('waitForMarker rejects a stale hit when the DOM did not change', async () =
 
 test('waitForMarker accepts a hit once the DOM signature changed and is stable', async () => {
   let calls = 0
-  const probeFn = async () => {
+  const probeFn = async (): Promise<any> => {
     calls++
     if (calls === 1) {
       return [
@@ -610,7 +628,7 @@ test('waitForMarker accepts a hit once the DOM signature changed and is stable',
     ]
   }
   const res = await waitForMarker(19222, ['HMROK-A4'], {
-    baseline: { 'pages/index/index': { sig: '100:10', title: 'pages/index/index[1]' } },
+    baseline: domBaseline('100:10', 'pages/index/index[1]'),
     intervalMs: 1,
     settleMs: 1,
     timeoutMs: 2000,
@@ -627,7 +645,7 @@ test('waitForMarker does not accept a hit on a half loaded page', async () => {
   // The signature changes on every poll -> the view is still loading and the
   // hit must not be accepted.
   let calls = 0
-  const probeFn = async () => {
+  const probeFn = async (): Promise<any> => {
     calls++
     return [
       {
@@ -639,7 +657,7 @@ test('waitForMarker does not accept a hit on a half loaded page', async () => {
     ]
   }
   const res = await waitForMarker(19222, ['HMROK-A4'], {
-    baseline: { 'pages/index/index': { sig: '100:10', title: 'pages/index/index[1]' } },
+    baseline: domBaseline('100:10', 'pages/index/index[1]'),
     intervalMs: 1,
     settleMs: 1,
     timeoutMs: 30,
@@ -651,11 +669,11 @@ test('waitForMarker does not accept a hit on a half loaded page', async () => {
 test('waitForMarker accepts a hit once the reload counter changed', async () => {
   // The content did not change, but the page WebView was reloaded (its title
   // carries an incremented counter) -> the hit is not stale.
-  const probeFn = async () => [
+  const probeFn = async (): Promise<any> => [
     { title: 'pages/index/index[2]', key: 'pages/index/index', sig: '100:10', hit: [['HMROK-A4', true]] },
   ]
   const res = await waitForMarker(19222, ['HMROK-A4'], {
-    baseline: { 'pages/index/index': { sig: '100:10', title: 'pages/index/index[1]' } },
+    baseline: domBaseline('100:10', 'pages/index/index[1]'),
     intervalMs: 1,
     settleMs: 1,
     timeoutMs: 2000,
@@ -665,11 +683,11 @@ test('waitForMarker accepts a hit once the reload counter changed', async () => 
 })
 
 test('waitForMarker accepts a hit on a target that did not exist before', async () => {
-  const probeFn = async () => [
+  const probeFn = async (): Promise<any> => [
     { title: 'pages/other/other[1]', key: 'pages/other/other', sig: '300:30', hit: [['HMROK-A4', true]] },
   ]
   const res = await waitForMarker(19222, ['HMROK-A4'], {
-    baseline: { 'pages/index/index': { sig: '100:10', title: 'pages/index/index[1]' } },
+    baseline: domBaseline('100:10', 'pages/index/index[1]'),
     intervalMs: 1,
     settleMs: 1,
     timeoutMs: 2000,
@@ -681,12 +699,12 @@ test('waitForMarker accepts a hit on a target that did not exist before', async 
 test('waitForMarker rejects a stale hit even when another target changed', async () => {
   // The `View` container changed, but the hit comes from the stale page
   // WebView -> the hit must not be accepted.
-  const probeFn = async () => [
+  const probeFn = async (): Promise<any> => [
     { title: 'View', key: 'View', sig: '200:20', hit: [['HMROK', false]] },
     { title: 'pages/index/index[1]', key: 'pages/index/index', sig: '100:10', hit: [['HMROK-A3', true]] },
   ]
   const res = await waitForMarker(19222, ['HMROK-A3'], {
-    baseline: { 'pages/index/index': { sig: '100:10', title: 'pages/index/index[1]' } },
+    baseline: domBaseline('100:10', 'pages/index/index[1]'),
     intervalMs: 1,
     settleMs: 1,
     timeoutMs: 20,
@@ -696,7 +714,7 @@ test('waitForMarker rejects a stale hit even when another target changed', async
 })
 
 test('waitForMarker accepts a hit without a baseline (first build)', async () => {
-  const probeFn = async () => [
+  const probeFn = async (): Promise<any> => [
     { title: 'pages/index/index[1]', key: 'pages/index/index', sig: '100:10', hit: [['HMROK', true]] },
   ]
   const res = await waitForMarker(19222, ['HMROK'], {
@@ -717,7 +735,7 @@ test('normalizeTargetTitle strips the reload counter', () => {
 })
 
 test('isFresh reports that the DOM changed even without a marker hit', () => {
-  const baseline = { 'pages/index/index': { sig: '100:10', title: 'pages/index/index[1]' } }
+  const baseline = domBaseline('100:10', 'pages/index/index[1]')
   assert.equal(
     isFresh([{ title: 'pages/index/index[1]', key: 'pages/index/index', sig: '120:12', hit: [['M', false]] }], baseline),
     true
@@ -731,11 +749,11 @@ test('isFresh reports that the DOM changed even without a marker hit', () => {
 })
 
 test('waitForMarker reports fresh=true when the DOM changed but the marker is gone', async () => {
-  const probeFn = async () => [
+  const probeFn = async (): Promise<any> => [
     { title: 'pages/index/index[1]', key: 'pages/index/index', sig: '120:12', hit: [['HMROK-A7', false]] },
   ]
   const res = await waitForMarker(19222, ['HMROK-A7'], {
-    baseline: { 'pages/index/index': { sig: '100:10', title: 'pages/index/index[1]' } },
+    baseline: domBaseline('100:10', 'pages/index/index[1]'),
     intervalMs: 1,
     settleMs: 1,
     timeoutMs: 20,
@@ -853,7 +871,7 @@ test('acquireLock tightens the permissions of a pre-seeded state directory', () 
  * @param {object} [opts]
  * @param {Record<string,string>} [opts.shell] the answer per shell command
  */
-function mockAdbFull(devicesOutput, opts = {}) {
+function mockAdbFull(devicesOutput: string, opts: { shell?: Record<string, string> } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'uni-hmr-adb-'))
   const p = path.join(dir, 'adb')
   // Inside the shell branch "$*" is the command that is passed to the device
@@ -932,8 +950,8 @@ test('★a wireless device gets the same scope as the same device over USB', () 
     { shell: { 'getprop ro.serialno': 'HW00000001' } }
   )
   const online = listDevices(adbPath).online
-  const usbScope = deviceScope(adbPath, online.find((d) => d.serial === 'HW00000001'), online)
-  const wifiScope = deviceScope(adbPath, online.find((d) => d.serial === '192.0.2.55:5555'), online)
+  const usbScope = deviceScope(adbPath, online.find((d) => d.serial === 'HW00000001')!, online)
+  const wifiScope = deviceScope(adbPath, online.find((d) => d.serial === '192.0.2.55:5555')!, online)
   assert.equal(usbScope, wifiScope)
   assert.equal(wifiScope, 'pid:HW00000001')
 })
@@ -949,8 +967,8 @@ test('★the android_id identifies a device across the transports', () => {
     }
   )
   const online = listDevices(adbPath).online
-  const usbScope = deviceScope(adbPath, online.find((d) => d.serial === 'HW00000001'), online)
-  const wifiScope = deviceScope(adbPath, online.find((d) => d.serial === '192.0.2.55:5555'), online)
+  const usbScope = deviceScope(adbPath, online.find((d) => d.serial === 'HW00000001')!, online)
+  const wifiScope = deviceScope(adbPath, online.find((d) => d.serial === '192.0.2.55:5555')!, online)
   assert.equal(usbScope, 'aid:a1b2c3d4e5f60718')
   assert.equal(wifiScope, 'aid:a1b2c3d4e5f60718')
 })

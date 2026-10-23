@@ -16,22 +16,86 @@
  */
 import path from 'node:path'
 import { existsSync } from 'node:fs'
-import { createAdb, findAdb, formatDeviceList, listDevices, resolveDevice, adbConnect, adbPair, deviceScope, isWirelessSerial } from './adb.mjs'
-import { diffManifest, localManifest, pushFullTar, pushIncremental, readManagedManifest, remoteManifest, removeRemote, stateKey, statePath, writeManagedManifest } from './sync.mjs'
-import { findManifest, findUniBin, extractAppid, lookupPackageByAppid, deviceWwwDir, platformDir, parsePlatformArg } from './project.mjs'
-import { artifactFingerprint, startUni, waitForStableChange } from './uni.mjs'
-import { DEFAULT_CMD, captureDomSignature, forwardCdp, forwardMiniServer, formatProbeResults, launchApp, navigateToPage, removeForwards, trigger, waitForAppPid, waitForAppReady, waitForMarker, MINISERVER_PORT } from './trigger.mjs'
-import { acquireLock } from './lock.mjs'
-import { assertAppid, assertPackageName, buildPageUrl, shellQuote, splitPageUrl } from './validate.mjs'
+import {
+  createAdb,
+  findAdb,
+  formatDeviceList,
+  listDevices,
+  resolveDevice,
+  adbConnect,
+  adbPair,
+  deviceScope,
+  isWirelessSerial,
+} from './adb'
+import type { Adb, DeviceInfo } from './adb'
+import {
+  diffManifest,
+  localManifest,
+  pushFullTar,
+  pushIncremental,
+  readManagedManifest,
+  remoteManifest,
+  removeRemote,
+  stateKey,
+  statePath,
+  writeManagedManifest,
+} from './sync'
+import {
+  findManifest,
+  findUniBin,
+  extractAppid,
+  lookupPackageByAppid,
+  deviceWwwDir,
+  platformDir,
+  parsePlatformArg,
+} from './project'
+import { artifactFingerprint, startUni, waitForStableChange } from './uni'
+import {
+  DEFAULT_CMD,
+  captureDomSignature,
+  forwardCdp,
+  forwardMiniServer,
+  formatProbeResults,
+  launchApp,
+  navigateToPage,
+  removeForwards,
+  trigger,
+  waitForAppPid,
+  waitForAppReady,
+  waitForMarker,
+  MINISERVER_PORT,
+} from './trigger'
+import type { DomBaseline, ProbeResult } from './trigger'
+import { acquireLock } from './lock'
+import { assertAppid, assertPackageName, buildPageUrl, shellQuote, splitPageUrl } from './validate'
 
 const CDP_PORT = 19222
 
-function log(...args) {
+function log(...args: unknown[]): void {
   console.log('[uni-hmr]', ...args)
 }
 
-function parseArgs(argv) {
-  const opts = {
+export interface CliOptions {
+  serial?: string
+  connect?: string
+  pair?: string
+  pairCode?: string
+  pkg?: string
+  appid?: string
+  cmd: string
+  cdpPort: number
+  markers: string[]
+  page?: string
+  query?: string
+  noTrigger: boolean
+  noProbe: boolean
+  full: boolean
+  help: boolean
+  rest: string[]
+}
+
+export function parseArgs(argv: string[]): CliOptions {
+  const opts: CliOptions = {
     serial: process.env.UNI_HMR_SERIAL || undefined,
     connect: process.env.UNI_HMR_CONNECT || undefined,
     pair: process.env.UNI_HMR_PAIR || undefined,
@@ -40,15 +104,19 @@ function parseArgs(argv) {
     appid: process.env.APPID || undefined,
     cmd: process.env.CMD || DEFAULT_CMD,
     cdpPort: Number(process.env.CDP_PORT || CDP_PORT),
-    markers: (process.env.MARK || 'HMRMARK').split(',').map((s) => s.trim()).filter(Boolean),
+    markers: (process.env.MARK || 'HMRMARK')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
     page: process.env.PAGE || undefined,
     query: process.env.QUERY || undefined,
     noTrigger: false,
     noProbe: false,
     full: false,
+    help: false,
     rest: [],
   }
-  const rest = []
+  const rest: string[] = []
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--serial') opts.serial = argv[++i]
@@ -59,7 +127,11 @@ function parseArgs(argv) {
     else if (a === '--appid') opts.appid = argv[++i]
     else if (a === '--cmd') opts.cmd = argv[++i]
     else if (a === '--cdp-port') opts.cdpPort = Number(argv[++i])
-    else if (a === '--mark') opts.markers = argv[++i].split(',').map((s) => s.trim()).filter(Boolean)
+    else if (a === '--mark')
+      opts.markers = argv[++i]!
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
     else if (a === '--page') opts.page = argv[++i]
     else if (a === '--query') opts.query = argv[++i]
     else if (a === '--no-trigger') opts.noTrigger = true
@@ -72,7 +144,7 @@ function parseArgs(argv) {
   return opts
 }
 
-function usage() {
+function usage(): void {
   console.log(`
 uni-hmr - hot update tool for uni-app development (auto sync to a device + runtime refresh)
 
@@ -123,14 +195,12 @@ by its transport serial (host:port), for example --serial 192.0.2.55:5555.
  * read the login state and the cookies), and port 13131 allows sending snc
  * commands directly.
  *
- * @param {object} adb
- * @param {number} cdpPort
- * @param {() => void} [beforeExit] extra teardown on a signal (for example stopping uni dev)
- * @returns {() => void} an idempotent cleanup function
+ * @param beforeExit extra teardown on a signal (for example stopping uni dev)
+ * @returns an idempotent cleanup function
  */
-function registerCleanup(adb, cdpPort, beforeExit) {
+function registerCleanup(adb: Adb, cdpPort: number, beforeExit?: () => void): () => void {
   let done = false
-  const cleanup = () => {
+  const cleanup = (): void => {
     if (done) return
     done = true
     removeForwards(adb, [MINISERVER_PORT, cdpPort])
@@ -146,17 +216,25 @@ function registerCleanup(adb, cdpPort, beforeExit) {
   return cleanup
 }
 
-/** Resolve the project context: the uni binary, the appid, the package name and the artifact directory. */
+export interface ProjectContext {
+  bin: string | null
+  appid: string
+  platform: string
+  uniArgs: string[]
+  outDir: string
+  manifestPath: string | null
+}
+
 /**
  * Resolve the project context.
  *
- * @param {object} opts
- * @param {string} cwd
- * @param {object} [o]
- * @param {boolean} [o.needBin] require the uni CLI (only the watch loop builds)
- * @returns {{bin: string|null, appid: string, platform: string, uniArgs: string[], outDir: string, manifestPath: string|null}}
+ * @param needBin require the uni CLI (only the watch loop builds)
  */
-function resolveContext(opts, cwd, { needBin = true } = {}) {
+function resolveContext(
+  opts: CliOptions,
+  cwd: string,
+  { needBin = true }: { needBin?: boolean } = {}
+): ProjectContext {
   const bin = findUniBin(cwd)
   if (!bin && needBin) {
     throw new Error(
@@ -180,18 +258,23 @@ function resolveContext(opts, cwd, { needBin = true } = {}) {
   return { bin, appid, platform, uniArgs, outDir, manifestPath }
 }
 
+export interface DeviceSetup {
+  device: DeviceInfo
+  adb: Adb
+  scope: string
+}
+
 /**
  * Resolve the target device, and connect / pair first when asked to.
  *
  * The wireless helpers run before the device resolution, because a wireless
  * device is not in the device list until `adb connect` succeeded.
  *
- * @returns {{device: object, adb: object, scope: string}}
- *   `scope` is the stable identity of the device (the hardware serial), under
- *   which the managed manifest and the device lock are stored. It is the same
- *   for a device reached over USB and over Wi-Fi.
+ * `scope` is the stable identity of the device (the hardware serial), under
+ * which the managed manifest and the device lock are stored. It is the same
+ * for a device reached over USB and over Wi-Fi.
  */
-function setupDevice(opts) {
+function setupDevice(opts: CliOptions): DeviceSetup {
   const adbPath = findAdb()
 
   if (opts.pair) {
@@ -214,8 +297,9 @@ function setupDevice(opts) {
   const scope = deviceScope(adbPath, device, devices.online)
   return { device, adb, scope }
 }
+
 /** Resolve the target package name: explicit option > reverse lookup on the device > error listing the candidates. */
-function resolvePackage(adb, opts, appid) {
+function resolvePackage(adb: Adb, opts: CliOptions, appid: string): string {
   if (opts.pkg) return assertPackageName(opts.pkg)
   const hits = lookupPackageByAppid(adb, appid)
   if (hits.length === 1) return assertPackageName(hits[0])
@@ -232,6 +316,11 @@ function resolvePackage(adb, opts, appid) {
   )
 }
 
+export type SyncStat =
+  | { mode: 'full'; ms: number; files: number }
+  | { mode: 'noop'; changed: number; removed: number }
+  | { mode: 'incremental'; changed: number; removed: number; ms: number }
+
 /**
  * Sync the artifacts to the device. Returns the sync statistics.
  *
@@ -241,7 +330,12 @@ function resolvePackage(adb, opts, appid) {
  *   So only the files recorded in the **managed manifest** that no longer exist
  *   locally are deleted, everything else is kept.
  */
-async function syncArtifacts(adb, ctx, pkg, { full = false, scope } = {}) {
+async function syncArtifacts(
+  adb: Adb,
+  ctx: ProjectContext,
+  pkg: string,
+  { full = false, scope }: { full?: boolean; scope?: string } = {}
+): Promise<SyncStat> {
   const localRoot = ctx.outDir
   if (!existsSync(localRoot)) {
     throw new Error(
@@ -293,7 +387,12 @@ async function syncArtifacts(adb, ctx, pkg, { full = false, scope } = {}) {
   // Update the managed manifest
   const nextManaged = [...new Set([...managed.filter((f) => localSet.has(f)), ...changed])]
   writeManagedManifest(stateFile, nextManaged)
-  return { mode: 'incremental', changed: changed.length, removed: removed.length, ms: Date.now() - t0 }
+  return {
+    mode: 'incremental',
+    changed: changed.length,
+    removed: removed.length,
+    ms: Date.now() - t0,
+  }
 }
 
 /**
@@ -305,7 +404,12 @@ async function syncArtifacts(adb, ctx, pkg, { full = false, scope } = {}) {
  * `baseline` is the DOM signature captured before the refresh. A hit on a
  * DOM that is still identical to the baseline is a stale hit and is rejected.
  */
-async function runProbe(adb, pkg, opts, baseline = null) {
+async function runProbe(
+  adb: Adb,
+  pkg: string,
+  opts: CliOptions,
+  baseline: DomBaseline | null = null
+): Promise<{ hit: boolean; results: ProbeResult[]; fresh: boolean }> {
   const { hit, results, fresh } = await waitForMarker(opts.cdpPort, opts.markers, {
     baseline,
     onAttempt: () => {
@@ -316,7 +420,7 @@ async function runProbe(adb, pkg, opts, baseline = null) {
   return { hit, results, fresh }
 }
 
-async function cmdDoctor(opts, cwd) {
+async function cmdDoctor(opts: CliOptions, cwd: string): Promise<void> {
   const adbPath = findAdb()
   log(`adb: ${adbPath}`)
 
@@ -358,13 +462,17 @@ async function cmdDoctor(opts, cwd) {
   log(`Target package: ${pkg}`)
   log(`Device www directory: ${deviceWwwDir(pkg, ctx.appid)}`)
   log(
-    `www exists: ${adb.shell(`ls -d ${shellQuote(deviceWwwDir(pkg, ctx.appid))} 2>/dev/null || echo missing`) !== 'missing'}`
+    `www exists: ${
+      adb.shell(
+        `ls -d ${shellQuote(deviceWwwDir(pkg, ctx.appid))} 2>/dev/null || echo missing`
+      ) !== 'missing'
+    }`
   )
   log(`Markers: ${opts.markers.join(', ')}`)
   log(`Refresh command: ${opts.cmd}`)
 }
 
-async function cmdSync(opts, cwd) {
+async function cmdSync(opts: CliOptions, cwd: string): Promise<void> {
   const { adb, scope } = setupDevice(opts)
   const ctx = resolveContext(opts, cwd)
   const pkg = resolvePackage(adb, opts, ctx.appid)
@@ -378,7 +486,7 @@ async function cmdSync(opts, cwd) {
   }
 }
 
-async function cmdForward(opts, cwd) {
+async function cmdForward(opts: CliOptions, cwd: string): Promise<void> {
   const { adb, scope } = setupDevice(opts)
   const ctx = resolveContext(opts, cwd)
   const pkg = resolvePackage(adb, opts, ctx.appid)
@@ -395,7 +503,7 @@ async function cmdForward(opts, cwd) {
   log(`Forwarded: tcp:${opts.cdpPort} -> app(${pkg}) webview`)
 }
 
-async function cmdTrigger(opts, cwd) {
+async function cmdTrigger(opts: CliOptions, cwd: string): Promise<void> {
   const { adb, scope } = setupDevice(opts)
   const ctx = resolveContext(opts, cwd)
   const pkg = resolvePackage(adb, opts, ctx.appid)
@@ -411,7 +519,7 @@ async function cmdTrigger(opts, cwd) {
   }
 }
 
-async function cmdProbe(opts, cwd) {
+async function cmdProbe(opts: CliOptions, cwd: string): Promise<void> {
   const { adb, scope } = setupDevice(opts)
   const ctx = resolveContext(opts, cwd)
   const pkg = resolvePackage(adb, opts, ctx.appid)
@@ -439,7 +547,7 @@ async function cmdProbe(opts, cwd) {
  * service layer does not have, so `plus.runtime.arguments` is ignored. The
  * page is therefore reached through CDP after the app rendered its entry page.
  */
-async function cmdLaunch(opts, cwd) {
+async function cmdLaunch(opts: CliOptions, cwd: string): Promise<void> {
   const { adb, scope } = setupDevice(opts)
   // The launch sub-command only talks to the device, it never builds, so the
   // uni CLI is not required here
@@ -476,7 +584,7 @@ async function cmdLaunch(opts, cwd) {
 
     log(`Navigating to ${url}…`)
     const res = await navigateToPage(opts.cdpPort, url, {
-      expectRoute: splitPageUrl(opts.page).path,
+      expectRoute: splitPageUrl(opts.page!).path,
     })
     if (!res.ok) throw new Error(res.message)
     log(`✅ landed on ${res.title}`)
@@ -486,7 +594,7 @@ async function cmdLaunch(opts, cwd) {
   }
 }
 
-async function cmdWatch(opts, cwd) {
+async function cmdWatch(opts: CliOptions, cwd: string): Promise<void> {
   const { device, adb, scope } = setupDevice(opts)
   const link = isWirelessSerial(device.serial) ? 'wireless' : 'usb'
   log(`Target device: ${device.serial} (${device.model || 'unknown model'}, ${link})`)
@@ -506,9 +614,9 @@ async function cmdWatch(opts, cwd) {
   // 1) Start the uni dev watch
   const uniArgs = ctx.uniArgs.length ? ctx.uniArgs : ['-p', ctx.platform]
   log(`Starting uni dev watch: ${uniArgs.join(' ')}`)
-  const uni = startUni({ bin: ctx.bin, cwd, args: uniArgs })
+  const uni = startUni({ bin: ctx.bin as string, cwd, args: uniArgs })
 
-  const shutdown = () => {
+  const shutdown = (): void => {
     uni.stop()
     lock.release()
   }
@@ -542,13 +650,13 @@ async function cmdWatch(opts, cwd) {
       } else {
         log(`Entry page: ${entry.title}`)
         const res = await navigateToPage(opts.cdpPort, pageUrl, {
-          expectRoute: splitPageUrl(opts.page).path,
+          expectRoute: splitPageUrl(opts.page!).path,
         })
         if (res.ok) log(`✅ landed on ${res.title}`)
         else log(`⚠️  ${res.message}`)
       }
     } catch (e) {
-      log(`⚠️  run-to-page skipped: ${e.message}`)
+      log(`⚠️  run-to-page skipped: ${(e as Error).message}`)
     }
   }
 
@@ -560,9 +668,13 @@ async function cmdWatch(opts, cwd) {
   if (!opts.noProbe) {
     try {
       const { hit } = await runProbe(adb, pkg, opts)
-      log(hit ? '✅ marker hit' : '⚠️ marker not hit (after the first build the page may not show the marker yet)')
+      log(
+        hit
+          ? '✅ marker hit'
+          : '⚠️ marker not hit (after the first build the page may not show the marker yet)'
+      )
     } catch (e) {
-      log(`The probe failed (this does not break the HMR loop): ${e.message}`)
+      log(`The probe failed (this does not break the HMR loop): ${(e as Error).message}`)
     }
   }
 
@@ -575,7 +687,7 @@ async function cmdWatch(opts, cwd) {
     try {
       next = await waitForStableChange(ctx.outDir, baseline, { intervalMs: 400 })
     } catch (e) {
-      log(e.message)
+      log((e as Error).message)
       break
     }
     baseline = next
@@ -593,7 +705,7 @@ async function cmdWatch(opts, cwd) {
         // Capture the DOM signature before the refresh, so that a stale hit
         // (the old page WebView that is still alive during the restart) is
         // not mistaken for a successful update.
-        let baseline = null
+        let baseline: DomBaseline | null = null
         if (!opts.noProbe) {
           try {
             forwardCdp(adb, pkg, opts.cdpPort)
@@ -623,14 +735,14 @@ async function cmdWatch(opts, cwd) {
         }
       }
     } catch (e) {
-      log(`The sync failed: ${e.message}`)
+      log(`The sync failed: ${(e as Error).message}`)
     }
   }
   shutdown()
   cleanupForwards()
 }
 
-export async function run(argv) {
+export async function run(argv: string[]): Promise<void> {
   const opts = parseArgs(argv)
   if (opts.help) {
     usage()
@@ -641,8 +753,8 @@ export async function run(argv) {
   // Sub-command parsing: an explicit sub-command name must not be forwarded to the uni CLI
   const sub = opts.rest[0]
   const subCommands = ['doctor', 'sync', 'forward', 'probe', 'trigger', 'launch', 'watch']
-  const command = subCommands.includes(sub) ? sub : 'watch'
-  if (subCommands.includes(sub)) {
+  const command = sub && subCommands.includes(sub) ? sub : 'watch'
+  if (sub && subCommands.includes(sub)) {
     opts.rest = opts.rest.slice(1)
   }
 
@@ -664,7 +776,7 @@ export async function run(argv) {
         return await cmdWatch(opts, cwd)
     }
   } catch (e) {
-    console.error(`[uni-hmr] error: ${e.message}`)
+    console.error(`[uni-hmr] error: ${(e as Error).message}`)
     process.exitCode = 1
   }
 }

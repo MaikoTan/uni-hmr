@@ -26,7 +26,7 @@ import path from 'node:path'
  *   foo'  ->  'foo'\''bar'
  * The shell parses '\'' as a literal single quote.
  */
-export function shellQuote(value) {
+export function shellQuote(value: unknown): string {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
@@ -57,7 +57,7 @@ const PAGE_QUERY_RE = /^[A-Za-z0-9._~%&=+,:@/-]*$/
 const REL_SEGMENT_RE = /^[A-Za-z0-9._@+~()[\]-]+$/
 
 /** Validate an Android package name. */
-export function assertPackageName(pkg) {
+export function assertPackageName(pkg: unknown): string {
   if (typeof pkg !== 'string' || !PKG_RE.test(pkg)) {
     throw new Error(
       `Invalid application package name: ${JSON.stringify(pkg)}\n` +
@@ -69,7 +69,7 @@ export function assertPackageName(pkg) {
 }
 
 /** Validate a uni appid. */
-export function assertAppid(appid) {
+export function assertAppid(appid: unknown): string {
   if (typeof appid !== 'string' || !APPID_RE.test(appid)) {
     throw new Error(
       `Invalid appid: ${JSON.stringify(appid)}\n` +
@@ -85,7 +85,7 @@ export function assertAppid(appid) {
  * A leading slash is accepted (HBuilderX writes `/pages/a/b` in its launch
  * configuration) and stripped, because the runtime reports routes without it.
  */
-export function assertPagePath(page) {
+export function assertPagePath(page: unknown): string {
   if (typeof page !== 'string' || page.length === 0) {
     throw new Error('Invalid page path: empty')
   }
@@ -109,7 +109,7 @@ export function assertPagePath(page) {
 }
 
 /** Validate a URL query string (`a=1&b=2`). An empty string is allowed. */
-export function assertPageQuery(query) {
+export function assertPageQuery(query: unknown): string {
   if (query === undefined || query === null || query === '') return ''
   if (typeof query !== 'string' || !PAGE_QUERY_RE.test(query)) {
     throw new Error(
@@ -126,11 +126,8 @@ export function assertPageQuery(query) {
  * The `--page` value may be written as a whole url (`/pages/a/b?x=1`), the same
  * way HBuilderX writes it, so the query has to be separated before the path is
  * validated.
- *
- * @param {string} page page path, optionally with a query (`pages/a/b?x=1`)
- * @returns {{path: string, query: string}}
  */
-export function splitPageUrl(page) {
+export function splitPageUrl(page: string): { path: string; query: string } {
   if (typeof page !== 'string') return { path: page, query: '' }
   const i = page.indexOf('?')
   if (i === -1) return { path: page, query: '' }
@@ -142,12 +139,8 @@ export function splitPageUrl(page) {
  *
  * The query may be given inline in the page (`pages/a/b?x=1`) or through the
  * separate `--query` option; when both are present the inline part comes first.
- *
- * @param {string} page page path (`pages/a/b`, a leading slash is accepted)
- * @param {string} [query] query string (`a=1&b=2`)
- * @returns {string} `/pages/a/b?a=1&b=2`
  */
-export function buildPageUrl(page, query = '') {
+export function buildPageUrl(page: string, query = ''): string {
   const parts = splitPageUrl(page)
   const inline = assertPageQuery(parts.query)
   const extra = assertPageQuery(query)
@@ -165,7 +158,7 @@ export function buildPageUrl(page, query = '') {
  *   - any character outside the allow-list (spaces, quotes, `;`, `$`, backticks
  *     and other shell metacharacters)
  */
-export function assertRelPath(rel) {
+export function assertRelPath(rel: unknown): string {
   if (typeof rel !== 'string' || rel.length === 0) {
     throw new Error('Invalid artifact relative path: empty')
   }

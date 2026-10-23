@@ -8,7 +8,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { assertAppid, assertPackageName, shellQuote } from './validate.mjs'
+import { assertAppid, assertPackageName, shellQuote } from './validate'
+import type { ShellAdb } from './adb'
 
 /** Entry point of the uni CLI inside the @dcloudio/vite-plugin-uni package. */
 const UNI_ENTRY = '@dcloudio/vite-plugin-uni/bin/uni.js'
@@ -27,7 +28,7 @@ const UNI_ENTRY = '@dcloudio/vite-plugin-uni/bin/uni.js'
  * @dcloudio/vite-plugin-uni declares no `exports` field and is CommonJS, so
  * resolving the sub-path '@dcloudio/vite-plugin-uni/bin/uni.js' is legal.
  */
-export function findUniEntry(cwd) {
+export function findUniEntry(cwd: string): string | null {
   let dir = path.resolve(cwd)
   for (;;) {
     // require.resolve must be based on a file inside the current directory,
@@ -50,12 +51,12 @@ export function findUniEntry(cwd) {
  * Prefers the real JS entry (cross-platform safe) and falls back to the
  * `.bin/uni` shim (a symlink on Linux/macOS).
  */
-export function findUniBin(cwd) {
+export function findUniBin(cwd: string): string | null {
   return findUniEntry(cwd) || findUniBinShim(cwd)
 }
 
 /** Look only inside `.bin/` (kept for tests and diagnostics). */
-export function findUniBinShim(cwd) {
+export function findUniBinShim(cwd: string): string | null {
   let dir = path.resolve(cwd)
   for (;;) {
     const candidate = path.join(dir, 'node_modules', '.bin', 'uni')
@@ -68,7 +69,7 @@ export function findUniBinShim(cwd) {
 }
 
 /** Platform -> artifact directory name (matches uni-cli-shared getPlatformDir). */
-export function platformDir(platform) {
+export function platformDir(platform: string): string {
   if (platform === 'app-plus' || platform === 'app') return 'app'
   if (platform === 'app-android') return 'app-android'
   if (platform === 'app-ios') return 'app-ios'
@@ -81,7 +82,7 @@ export function platformDir(platform) {
  * with JSON.parse directly. The `manifest.json` inside the dist output is strict
  * JSON, but uses the key `id` instead of `appid`.
  */
-export function extractAppid(manifestPath) {
+export function extractAppid(manifestPath: string): string | null {
   const raw = readFileSync(manifestPath, 'utf8')
   try {
     const j = JSON.parse(raw)
@@ -95,7 +96,7 @@ export function extractAppid(manifestPath) {
 }
 
 /** Find the project manifest: `src/manifest.json` is preferred. */
-export function findManifest(cwd) {
+export function findManifest(cwd: string): string | null {
   for (const rel of ['src/manifest.json', 'manifest.json']) {
     const p = path.join(cwd, rel)
     if (existsSync(p)) return p
@@ -108,12 +109,12 @@ export function findManifest(cwd) {
  * An installed app leaves a directory behind at
  * /storage/emulated/0/Android/data/<pkg>/apps/<appid>.
  */
-export function lookupPackageByAppid(adb, appid) {
+export function lookupPackageByAppid(adb: ShellAdb, appid: string): string[] {
   assertAppid(appid)
   const out = adb.shell(
     `ls -d /storage/emulated/0/Android/data/*/apps/${shellQuote(appid)} 2>/dev/null || true`
   )
-  const hits = []
+  const hits: string[] = []
   for (const raw of out.split('\n')) {
     const p = raw.trim()
     if (!p) continue
@@ -127,7 +128,7 @@ export function lookupPackageByAppid(adb, appid) {
 }
 
 /** Device-side www resource directory. */
-export function deviceWwwDir(pkg, appid) {
+export function deviceWwwDir(pkg: string, appid: string): string {
   assertPackageName(pkg)
   assertAppid(appid)
   return `/storage/emulated/0/Android/data/${pkg}/apps/${appid}/www`
@@ -140,7 +141,7 @@ export function deviceWwwDir(pkg, appid) {
  * `uni-hmr -p app`    ->  uni -p app
  * `uni-hmr`           ->  uni -p app-plus
  */
-export function parsePlatformArg(args) {
+export function parsePlatformArg(args: string[]): { platform: string; args: string[] } {
   const out = [...args]
 
   // 1) Explicit -p / --platform

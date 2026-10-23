@@ -3,22 +3,29 @@
 ```bash
 cd uni-hmr
 yarn install
-yarn test        # node --test
+yarn typecheck   # tsc --noEmit
+yarn build       # tsdown -> dist/uni-hmr.mjs
+yarn test        # node --test with the tsx loader
 ```
+
+The package is written in TypeScript (5.x) and bundled by `tsdown`; Yarn manages
+the dependencies. `dist/` is generated, it is not checked in.
 
 ## Layout
 
 ```
-bin/uni-hmr.mjs      CLI entry point
-src/adb.mjs          adb wrapper + the multi-device strategy + the wireless support
-src/uni.mjs          uni CLI wrapper + fingerprint + debounce
-src/sync.mjs         full tar / incremental md5 / the managed manifest
-src/trigger.mjs      the snc commands + the CDP probe
-src/project.mjs      discovery of the appid / package name / artifact directory
-src/validate.mjs     shell quoting + the input allow-list validation
-src/lock.mjs         the device scoped lock (one process per device)
-src/cli.mjs          the sub-command orchestration
-test/unit.test.mjs   the unit tests
+bin/uni-hmr.ts       CLI entry point (the package `bin` points at the build output)
+src/adb.ts           adb wrapper + the multi-device strategy + the wireless support
+src/uni.ts           uni CLI wrapper + fingerprint + debounce
+src/sync.ts          full tar / incremental md5 / the managed manifest
+src/trigger.ts       the snc commands + the CDP probe
+src/project.ts       discovery of the appid / package name / artifact directory
+src/validate.ts      shell quoting + the input allow-list validation
+src/lock.ts          the device scoped lock (one process per device)
+src/cli.ts           the sub-command orchestration
+test/unit.test.ts    the unit tests
+tsdown.config.ts     the bundler configuration (ESM, node22, sourcemap)
+tsconfig.json        the type checking configuration (noEmit, strict)
 docs/                the long form documentation
 ```
 
@@ -27,7 +34,13 @@ docs/                the long form documentation
 The test suite is a pure unit test suite, it does not need a device:
 
 ```bash
-node --test "test/**/*.test.mjs"
+yarn test
+```
+
+It runs the TypeScript sources directly through the `tsx` loader:
+
+```bash
+node --import tsx --test "test/**/*.test.ts"
 ```
 
 It covers the device parsing and the multi-device strategy, the manifest

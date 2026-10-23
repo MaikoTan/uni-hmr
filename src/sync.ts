@@ -16,13 +16,23 @@
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readdirSync, readFileSync, lstatSync, chmodSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  lstatSync,
+  chmodSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { assertRelPath, shellQuote } from './validate.mjs'
+import { assertRelPath, shellQuote } from './validate'
+import type { PushAdb, ShellAdb } from './adb'
 
 /** Recursively collect the relative paths of all files under a directory (POSIX style). */
-export function listFiles(root, base = root, out = []) {
+export function listFiles(root: string, base = root, out: string[] = []): string[] {
   let entries
   try {
     entries = readdirSync(root, { withFileTypes: true })
@@ -41,7 +51,7 @@ export function listFiles(root, base = root, out = []) {
 }
 
 /** Compute the md5 hash of a local file. */
-export function md5File(abs) {
+export function md5File(abs: string): string {
   return createHash('md5').update(readFileSync(abs)).digest('hex')
 }
 
@@ -50,8 +60,8 @@ export function md5File(abs) {
  * Hashing the file contents in-process is much faster than shelling out to
  * md5sum 744 times.
  */
-export function localManifest(root) {
-  const map = new Map()
+export function localManifest(root: string): Map<string, string> {
+  const map = new Map<string, string>()
   for (const rel of listFiles(root)) {
     try {
       map.set(rel, md5File(path.join(root, rel)))
@@ -66,8 +76,8 @@ export function localManifest(root) {
  * Parse a device-side md5sum manifest.
  * The input looks like: `<hash>  ./relative/path` (md5sum uses two spaces).
  */
-export function parseRemoteManifest(stdout) {
-  const map = new Map()
+export function parseRemoteManifest(stdout: string): Map<string, string> {
+  const map = new Map<string, string>()
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
@@ -82,21 +92,29 @@ export function parseRemoteManifest(stdout) {
 }
 
 /** Fetch the device-side manifest. `find -exec md5sum {} +` takes about 0.42s. */
-export function remoteManifest(adb, remoteDir) {
+export function remoteManifest(adb: ShellAdb, remoteDir: string): Map<string, string> {
   const out = adb.shell(`cd ${shellQuote(remoteDir)} && find . -type f -exec md5sum {} +`)
   return parseRemoteManifest(out)
 }
 
+export interface ManifestDiff {
+  changed: string[]
+  removed: string[]
+}
+
 /**
  * Compute the list of files that need to be pushed.
- * @returns {{changed: string[], removed: string[], added: string[]}}
+ *
  *   changed present locally but different (or missing) on the device
  *   removed present on the device but gone locally -> needs deletion
  *   added   same as changed (newly created locally)
  */
-export function diffManifest(local, remote) {
-  const changed = []
-  const removed = []
+export function diffManifest(
+  local: Map<string, string>,
+  remote: Map<string, string>
+): ManifestDiff {
+  const changed: string[] = []
+  const removed: string[] = []
   for (const [rel, hash] of local) {
     if (remote.get(rel) !== hash) changed.push(rel)
   }
@@ -110,9 +128,14 @@ export function diffManifest(local, remote) {
  * Incremental push: only push the files whose md5 does not match.
  * The parent directory is created before each push (adb push does not do it).
  */
-export function pushIncremental(adb, localRoot, remoteDir, files) {
-  const pushed = []
-  const dirs = new Set()
+export function pushIncremental(
+  adb: PushAdb & ShellAdb,
+  localRoot: string,
+  remoteDir: string,
+  files: string[]
+): string[] {
+  const pushed: string[] = []
+  const dirs = new Set<string>()
   for (const rel of files) {
     assertRelPath(rel)
     const abs = path.join(localRoot, rel)
@@ -140,7 +163,7 @@ export function pushIncremental(adb, localRoot, remoteDir, files) {
  *   absolute paths and shell metacharacters). Otherwise a poisoned manifest
  *   could construct a traversal and delete files outside the www directory.
  */
-export function removeRemote(adb, remoteDir, files) {
+export function removeRemote(adb: ShellAdb, remoteDir: string, files: string[]): void {
   for (const rel of files) {
     assertRelPath(rel)
     adb.shell(`rm -f ${shellQuote(`${remoteDir}/${rel}`)}`)
@@ -162,7 +185,7 @@ const STATE_DIR = path.join(os.tmpdir(), 'uni-hmr')
  *   - if the manifest is lost the tool degrades to "delete nothing", which is
  *     the safe direction
  */
-export function statePath(serial, pkg, appid) {
+export function statePath(serial: string, pkg: string, appid: string): string {
   return path.join(STATE_DIR, `${stateKey(serial, pkg, appid)}.json`)
 }
 
@@ -172,13 +195,8 @@ export function statePath(serial, pkg, appid) {
  * The same scope is used for the device lock, so that two processes working on
  * the same device and the same application exclude each other, while
  * different devices or different applications can run in parallel.
- *
- * @param {string} serial
- * @param {string} pkg
- * @param {string} appid
- * @returns {string}
  */
-export function stateKey(serial, pkg, appid) {
+export function stateKey(serial: string, pkg: string, appid: string): string {
   return `${sanitize(serial)}__${sanitize(pkg)}__${sanitize(appid)}`
 }
 
@@ -192,7 +210,7 @@ export function stateKey(serial, pkg, appid) {
  * characters verbatim, hex-encode the rest and append a short hash, which is
  * lossless and collision-free.
  */
-function sanitize(s) {
+function sanitize(s: unknown): string {
   const raw = String(s)
   let safe = ''
   for (const ch of raw) {
@@ -204,7 +222,7 @@ function sanitize(s) {
 }
 
 /** Read the managed manifest. */
-export function readManagedManifest(stateFile) {
+export function readManagedManifest(stateFile: string): string[] {
   try {
     const j = JSON.parse(readFileSync(stateFile, 'utf8'))
     return Array.isArray(j.files) ? j.files : []
@@ -226,16 +244,14 @@ export function readManagedManifest(stateFile) {
  * The directory is `0700`; `mkdirSync` does not change the permissions of an
  *   existing directory, so a pre-seeded `0777` directory is tightened
  *   explicitly.
- *
- * @param {string} dir
  */
-export function ensureStateDir(dir) {
+export function ensureStateDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   let st
   try {
     st = lstatSync(dir)
   } catch (e) {
-    if (e && e.code === 'ENOENT') return
+    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return
     throw e
   }
   if (st.isSymbolicLink()) {
@@ -263,7 +279,7 @@ export function ensureStateDir(dir) {
  *   This avoids leaving half-written JSON behind after a crash (which would
  *   fail to parse and degrade to [], a fallback rather than correctness).
  */
-export function writeManagedManifest(stateFile, files) {
+export function writeManagedManifest(stateFile: string, files: string[]): void {
   const dir = path.dirname(stateFile)
   ensureStateDir(dir)
   try {
@@ -274,11 +290,14 @@ export function writeManagedManifest(stateFile, files) {
       )
     }
   } catch (e) {
-    if (e && e.code !== 'ENOENT') throw e
+    if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e
   }
 
   // Temp file in the same directory -> atomic rename
-  const tmp = path.join(dir, `.${path.basename(stateFile)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`)
+  const tmp = path.join(
+    dir,
+    `.${path.basename(stateFile)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
+  )
   try {
     writeFileSync(tmp, JSON.stringify({ files }), { mode: 0o600 })
     renameSync(tmp, stateFile)
@@ -287,6 +306,11 @@ export function writeManagedManifest(stateFile, files) {
       rmSync(tmp, { force: true })
     } catch {}
   }
+}
+
+export interface FullTarPaths {
+  tarFile: string
+  remoteTar: string
 }
 
 /**
@@ -320,9 +344,16 @@ export function writeManagedManifest(stateFile, files) {
  * `-m` skips restoring mtimes (sdcard cannot set directory timestamps, which
  * would otherwise produce hundreds of error lines).
  */
-export function pushFullTar(adb, localRoot, remoteDir) {
+export function pushFullTar(
+  adb: PushAdb & ShellAdb,
+  localRoot: string,
+  remoteDir: string
+): FullTarPaths {
   // Private directory + random file name: unpredictable and not pre-seedable
-  const tmpDir = path.join(os.tmpdir(), `uni-hmr-tar-${process.pid}-${randomBytes(8).toString('hex')}`)
+  const tmpDir = path.join(
+    os.tmpdir(),
+    `uni-hmr-tar-${process.pid}-${randomBytes(8).toString('hex')}`
+  )
   mkdirSync(tmpDir, { recursive: true, mode: 0o700 })
   const tarFile = path.join(tmpDir, 'app.tar')
   // The same random name on the device, so no other process can grab it

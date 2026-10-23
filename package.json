@@ -4,10 +4,11 @@
   "description": "Hot update tool for uni-app development: automatic build, incremental sync to a real device and runtime refresh",
   "type": "module",
   "license": "LGPL-3.0-only",
-  "bin": "./bin/uni-hmr.mjs",
+  "bin": {
+    "uni-hmr": "./dist/uni-hmr.mjs"
+  },
   "files": [
-    "bin",
-    "src",
+    "dist",
     "docs",
     "LICENSE",
     "README.md"
@@ -16,6 +17,16 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "test": "node --test \"test/**/*.test.mjs\""
-  }
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test \"test/**/*.test.ts\"",
+    "prepublishOnly": "yarn build"
+  },
+  "devDependencies": {
+    "@types/node": "~22",
+    "tsdown": "^0.23.1",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3"
+  },
+  "packageManager": "yarn@4.18.1"
 }

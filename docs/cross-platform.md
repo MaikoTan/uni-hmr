@@ -25,7 +25,7 @@ macOS and Windows. What is bound to a platform is the **target device**
 Calling `spawn(process.execPath, [bin])` on Windows parses the shim as JS and
 crashes.
 
-> **How it is avoided**: the `findUniEntry()` function in `src/project.mjs` uses
+> **How it is avoided**: the `findUniEntry()` function in `src/project.ts` uses
 > `createRequire(path.join(dir, 'package.json')).resolve('@dcloudio/vite-plugin-uni/bin/uni.js')`
 > to look up the **real JS entry** level by level, and only falls back to the
 > `.bin/uni` shim when it cannot be found.

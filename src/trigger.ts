@@ -21,7 +21,8 @@
  */
 import http from 'node:http'
 import net from 'node:net'
-import { assertPackageName, shellQuote } from './validate.mjs'
+import { assertPackageName, shellQuote } from './validate'
+import type { AdbRawOptions, ForwardAdb, ShellAdb } from './adb'
 
 /** A CDP target title of a real uni-app page WebView, e.g. `pages/index/index[2]`. */
 const PAGE_TARGET_RE = /^pages\//
@@ -30,13 +31,42 @@ export const MINISERVER_PORT = 13131
 export const DEFAULT_CMD = 'snc:script debugRefresh'
 
 /** adb options that silence the output of a best-effort `forward --remove`. */
-const QUIET = { stdio: ['ignore', 'ignore', 'ignore'] }
+const QUIET: AdbRawOptions = { stdio: ['ignore', 'ignore', 'ignore'] }
+
+export interface CdpTarget {
+  title: string
+  webSocketDebuggerUrl: string
+  [key: string]: unknown
+}
+
+export type ProbeHit = [string, boolean]
+
+export interface ProbeResult {
+  title: string
+  key?: string
+  len?: number
+  htmlLen?: number
+  kids?: number
+  sig?: string
+  hit?: ProbeHit[]
+  error?: string
+}
+
+export interface DomSignature {
+  sig: string
+  title: string
+  marked: boolean
+}
+
+export type DomBaseline = Record<string, DomSignature>
+
+export type NavigateResult = { ok: true; title: string } | { ok: false; message: string }
 
 /**
  * Establish the mini server port forward. The app pid changes after a
  * restart, so this has to be re-run.
  */
-export function forwardMiniServer(adb, port = MINISERVER_PORT) {
+export function forwardMiniServer(adb: ForwardAdb, port = MINISERVER_PORT): void {
   try {
     adb.forward(['--remove', `tcp:${port}`], QUIET)
   } catch {
@@ -56,7 +86,7 @@ export function forwardMiniServer(adb, port = MINISERVER_PORT) {
  *   exits without removing them, the tunnels stay around until the adb server
  *   restarts.
  */
-export function removeForwards(adb, ports = [MINISERVER_PORT, 19222]) {
+export function removeForwards(adb: ForwardAdb, ports: number[] = [MINISERVER_PORT, 19222]): void {
   for (const port of ports) {
     try {
       adb.forward(['--remove', `tcp:${port}`], QUIET)
@@ -66,16 +96,14 @@ export function removeForwards(adb, ports = [MINISERVER_PORT, 19222]) {
   }
 }
 
-/**
- * Send an snc command (bare string, no trailing newline).
- */
-export function trigger(cmd, port = MINISERVER_PORT, timeoutMs = 2000) {
+/** Send an snc command (bare string, no trailing newline). */
+export function trigger(cmd: string, port = MINISERVER_PORT, timeoutMs = 2000): Promise<void> {
   return new Promise((resolve, reject) => {
     const sock = net.createConnection(port, '127.0.0.1', () => {
       sock.write(cmd)
     })
     let done = false
-    const finish = (err) => {
+    const finish = (err?: Error): void => {
       if (done) return
       done = true
       try {
@@ -84,7 +112,11 @@ export function trigger(cmd, port = MINISERVER_PORT, timeoutMs = 2000) {
       err ? reject(err) : resolve()
     }
     sock.on('close', () => finish())
-    sock.on('error', (e) => finish(new Error(`Cannot connect to the device mini server (127.0.0.1:${port}): ${e.message}`)))
+    sock.on('error', (e) =>
+      finish(
+        new Error(`Cannot connect to the device mini server (127.0.0.1:${port}): ${e.message}`)
+      )
+    )
     setTimeout(() => finish(), timeoutMs)
   })
 }
@@ -96,7 +128,7 @@ export function trigger(cmd, port = MINISERVER_PORT, timeoutMs = 2000) {
  * swallowed here: right after a cold start the process simply does not exist
  * yet and that is not an error.
  */
-export function appPid(adb, pkg) {
+export function appPid(adb: ShellAdb, pkg: string): string | null {
   assertPackageName(pkg)
   let p
   try {
@@ -113,14 +145,13 @@ export function appPid(adb, pkg) {
  * `am start` returns before the process is created, so a `pidof` right after
  * it is normally empty. The CDP forward needs the pid, hence the wait.
  *
- * @param {object} adb
- * @param {string} pkg
- * @param {object} [opts]
- * @param {number} [opts.timeoutMs]
- * @param {number} [opts.intervalMs]
- * @returns {Promise<string>} the pid
+ * @returns the pid
  */
-export async function waitForAppPid(adb, pkg, opts = {}) {
+export async function waitForAppPid(
+  adb: ShellAdb,
+  pkg: string,
+  opts: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<string> {
   const { timeoutMs = 20_000, intervalMs = 250 } = opts
   const deadline = Date.now() + timeoutMs
   for (;;) {
@@ -144,19 +175,18 @@ export async function waitForAppPid(adb, pkg, opts = {}) {
  * retried a few times: right after a cold start the first attempt normally
  * finds nothing yet.
  *
- * @param {object} adb
- * @param {string} pkg
- * @param {number} cdpPort
- * @param {object} [opts]
- * @param {number} [opts.retries] how many times to look for the socket
- * @param {number} [opts.intervalMs] delay between two lookups
- * @returns {string} the devtools socket name
+ * @returns the devtools socket name
  */
-export function forwardCdp(adb, pkg, cdpPort, opts = {}) {
+export function forwardCdp(
+  adb: ForwardAdb & ShellAdb,
+  pkg: string,
+  cdpPort: number,
+  opts: { retries?: number; intervalMs?: number } = {}
+): string {
   const { retries = 20, intervalMs = 250 } = opts
   const pid = appPid(adb, pkg)
   if (!pid) throw new Error(`The app is not running: ${pkg}`)
-  let name = null
+  let name: string | null = null
   for (let i = 0; i <= retries && !name; i++) {
     if (i > 0) sleepSync(intervalMs)
     const sockets = adb.shell('cat /proc/net/unix | grep webview_devtools_remote || true')
@@ -180,7 +210,7 @@ export function forwardCdp(adb, pkg, cdpPort, opts = {}) {
  *
  * Used only by the synchronous `forwardCdp` retry loop, which cannot await.
  */
-function sleepSync(ms) {
+function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
@@ -195,14 +225,14 @@ function sleepSync(ms) {
  * the launcher activity differs per app (`io.dcloud.PandoraEntry` for the
  * DCloud runtime, but a plain `MainActivity` for others).
  *
- * @param {object} adb an adb wrapper bound to a specific serial
- * @param {string} pkg application package name
- * @returns {string} the resolved `pkg/activity` component
+ * @returns the resolved `pkg/activity` component
  */
-export function launchApp(adb, pkg) {
+export function launchApp(adb: ShellAdb, pkg: string): string {
   assertPackageName(pkg)
   adb.shell(`am force-stop ${shellQuote(pkg)}`)
-  const resolved = adb.shell(`cmd package resolve-activity --brief ${shellQuote(pkg)} | tail -n 1`).trim()
+  const resolved = adb
+    .shell(`cmd package resolve-activity --brief ${shellQuote(pkg)} | tail -n 1`)
+    .trim()
   if (!resolved.includes('/')) {
     throw new Error(
       `Could not resolve the launcher activity of ${pkg} on the device.\n` +
@@ -221,19 +251,17 @@ export function launchApp(adb, pkg) {
  * the target page before those finished would be overridden by them, so the
  * DOM signature of the entry page has to be stable first.
  *
- * @param {number} cdpPort
- * @param {object} [opts]
- * @param {number} [opts.timeoutMs] how long to keep waiting for the entry page
- * @param {number} [opts.intervalMs] delay between two polls
- * @param {number} [opts.stableRounds] how many identical signatures count as settled
- * @returns {Promise<{title: string, key: string}|null>} the entry page target, or null on timeout
+ * @returns the entry page target, or null on timeout
  */
-export async function waitForAppReady(cdpPort, opts = {}) {
+export async function waitForAppReady(
+  cdpPort: number,
+  opts: { timeoutMs?: number; intervalMs?: number; stableRounds?: number } = {}
+): Promise<{ title: string; key: string } | null> {
   const { timeoutMs = 25_000, intervalMs = 400, stableRounds = 2 } = opts
   const deadline = Date.now() + timeoutMs
-  let lastSig = null
+  let lastSig: string | null = null
   let stable = 0
-  let lastError = null
+  let lastError: unknown = null
 
   for (;;) {
     try {
@@ -241,7 +269,7 @@ export async function waitForAppReady(cdpPort, opts = {}) {
       const page = targets.find((t) => PAGE_TARGET_RE.test(t.title))
       if (page) {
         const r = await cdpEvaluate(page.webSocketDebuggerUrl, DOM_SIGNATURE_EXPR)
-        const sig = r?.result?.value
+        const sig = r?.result?.value as string | undefined
         // An empty body means the page WebView exists but nothing was rendered
         // yet, which does not count as ready
         if (sig && sig !== '0:5381') {
@@ -277,15 +305,14 @@ export async function waitForAppReady(cdpPort, opts = {}) {
  * `awaitPromise`), so the outcome is verified by watching the CDP target
  * titles instead, which also proves that the view really changed.
  *
- * @param {number} cdpPort
- * @param {string} url the target url, e.g. `/pages/index/index?a=1`
- * @param {object} [opts]
- * @param {string} [opts.expectRoute] the route the app has to end up on
- * @param {number} [opts.timeoutMs] how long to keep verifying
- * @param {number} [opts.intervalMs] delay between two polls
- * @returns {Promise<{ok: boolean, title?: string, message?: string}>}
+ * @param url the target url, e.g. `/pages/index/index?a=1`
+ * @param opts.expectRoute the route the app has to end up on
  */
-export async function navigateToPage(cdpPort, url, opts = {}) {
+export async function navigateToPage(
+  cdpPort: number,
+  url: string,
+  opts: { expectRoute?: string; timeoutMs?: number; intervalMs?: number } = {}
+): Promise<NavigateResult> {
   const { expectRoute, timeoutMs = 15_000, intervalMs = 400 } = opts
   // The runtime reports routes without a leading slash, so `/pages/a/b` and
   // `pages/a/b` have to compare equal here
@@ -293,7 +320,7 @@ export async function navigateToPage(cdpPort, url, opts = {}) {
     ? normalizeTargetTitle(String(expectRoute).replace(/^\/+/, ''))
     : null
   const deadline = Date.now() + timeoutMs
-  let lastError = null
+  let lastError: unknown = null
 
   for (;;) {
     try {
@@ -346,7 +373,7 @@ export async function navigateToPage(cdpPort, url, opts = {}) {
 }
 
 /** List the CDP targets. */
-export function listCdpTargets(cdpPort) {
+export function listCdpTargets(cdpPort: number): Promise<CdpTarget[]> {
   return new Promise((resolve, reject) => {
     http
       .get(`http://127.0.0.1:${cdpPort}/json/list`, (res) => {
@@ -364,20 +391,47 @@ export function listCdpTargets(cdpPort) {
   })
 }
 
+export interface CdpEvaluateResult {
+  result?: { value?: unknown }
+  error?: unknown
+}
+
+interface WsMessageEvent {
+  data: string | ArrayBuffer | Buffer
+}
+
+interface WsErrorEvent {
+  message?: string
+}
+
+/** The small part of the built-in WebSocket API that this module uses. */
+interface MinimalWebSocket {
+  addEventListener(type: 'open', fn: () => void): void
+  addEventListener(type: 'message', fn: (ev: WsMessageEvent) => void): void
+  addEventListener(type: 'error', fn: (ev: WsErrorEvent) => void): void
+  addEventListener(type: 'close', fn: () => void): void
+  send(data: string): void
+  close(): void
+}
+
 /** Evaluate an expression over CDP and return its value. */
-export function cdpEvaluate(wsUrl, expression) {
+export function cdpEvaluate(wsUrl: string, expression: string): Promise<CdpEvaluateResult> {
   return new Promise((resolve, reject) => {
     // Node 22+ ships a built-in WebSocket, so no extra dependency is needed
-    const WS = globalThis.WebSocket
+    const WS = (globalThis as { WebSocket?: new (url: string) => MinimalWebSocket }).WebSocket
     if (!WS) return reject(new Error('Node 22+ (built-in WebSocket) is required for the CDP probe'))
     const ws = new WS(wsUrl)
     ws.addEventListener('open', () =>
       ws.send(
-        JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression, returnByValue: true } })
+        JSON.stringify({
+          id: 1,
+          method: 'Runtime.evaluate',
+          params: { expression, returnByValue: true },
+        })
       )
     )
     ws.addEventListener('message', (ev) => {
-      const raw = typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString()
+      const raw = typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data as ArrayBuffer).toString()
       const m = JSON.parse(raw)
       if (m.id === 1) {
         ws.close()
@@ -385,7 +439,9 @@ export function cdpEvaluate(wsUrl, expression) {
       }
     })
     ws.addEventListener('error', (e) => reject(new Error(e.message || 'WebSocket error')))
-    ws.addEventListener('close', () => reject(new Error('The WebSocket was closed before a result arrived')))
+    ws.addEventListener('close', () =>
+      reject(new Error('The WebSocket was closed before a result arrived'))
+    )
   })
 }
 
@@ -412,11 +468,8 @@ const DOM_SIGNATURE_EXPR = `(function(){
  * is a counter that is incremented on every reload. The counter has to be
  * stripped, otherwise the DOM signatures of the same page could not be
  * compared before and after a refresh.
- *
- * @param {string} title
- * @returns {string}
  */
-export function normalizeTargetTitle(title) {
+export function normalizeTargetTitle(title: string | undefined): string {
   return String(title || '').replace(/\[\d+\]$/, '')
 }
 
@@ -426,11 +479,15 @@ export function normalizeTargetTitle(title) {
  * avoid a substring that is contained in another marker (e.g. 'Laptop' is
  * contained in 'LaptopHMR2'), otherwise you get false positives.
  */
-export async function probe(cdpPort, markers = [], opts = {}) {
+export async function probe(
+  cdpPort: number,
+  markers: string[] = [],
+  opts: { quiet?: boolean } = {}
+): Promise<ProbeResult[]> {
   const { quiet = false } = opts
   const targets = await listCdpTargets(cdpPort)
   if (!targets.length) throw new Error('CDP did not report any target')
-  const results = []
+  const results: ProbeResult[] = []
   for (const t of targets) {
     try {
       const expr = `JSON.stringify({
@@ -441,10 +498,14 @@ export async function probe(cdpPort, markers = [], opts = {}) {
         hit: ${JSON.stringify(markers)}.map(m => [m, ((document.body && document.body.innerText) || '').includes(m)])
       })`
       const r = await cdpEvaluate(t.webSocketDebuggerUrl, expr)
-      const o = JSON.parse(r.result.value)
+      const o = JSON.parse(r.result?.value as string)
       results.push({ title: t.title, key: normalizeTargetTitle(t.title), ...o })
     } catch (e) {
-      results.push({ title: t.title, key: normalizeTargetTitle(t.title), error: e.message })
+      results.push({
+        title: t.title,
+        key: normalizeTargetTitle(t.title),
+        error: (e as Error).message,
+      })
     }
   }
   if (!quiet) {
@@ -454,17 +515,34 @@ export async function probe(cdpPort, markers = [], opts = {}) {
 }
 
 /** Format the probe results as human readable lines. */
-export function formatProbeResults(results = []) {
-  const lines = []
+export function formatProbeResults(results: ProbeResult[] = []): string[] {
+  const lines: string[] = []
   for (const r of results) {
     if (r.error) {
       lines.push(`=== ${r.title} === ERR ${r.error}`)
       continue
     }
-    lines.push(`=== ${r.title} === innerTextLen=${r.len} innerHTMLLen=${r.htmlLen} bodyKids=${r.kids}`)
+    lines.push(
+      `=== ${r.title} === innerTextLen=${r.len} innerHTMLLen=${r.htmlLen} bodyKids=${r.kids}`
+    )
     for (const [m, hit] of r.hit ?? []) lines.push(`   ${hit ? 'HIT ' : '--- '} ${m}`)
   }
   return lines
+}
+
+export interface WaitForMarkerOptions {
+  /** how long to keep polling */
+  timeoutMs?: number
+  /** delay between two attempts */
+  intervalMs?: number
+  /** delay before the first attempt */
+  settleMs?: number
+  /** the DOM signatures captured before the refresh */
+  baseline?: DomBaseline | null
+  /** called before every attempt */
+  onAttempt?: () => void
+  /** the probe implementation (injectable for the tests) */
+  probeFn?: typeof probe
 }
 
 /**
@@ -494,19 +572,12 @@ export function formatProbeResults(results = []) {
  *
  * The port forward has to be re-established on every attempt: the weex
  *   restart also changes the app pid and therefore the devtools socket.
- *
- * @param {number} cdpPort
- * @param {string[]} markers
- * @param {object} opts
- * @param {number} opts.timeoutMs  how long to keep polling
- * @param {number} opts.intervalMs delay between two attempts
- * @param {number} opts.settleMs   delay before the first attempt
- * @param {Record<string,{sig: string, title: string, marked: boolean}>|null} [opts.baseline] the DOM signatures captured before the refresh
- * @param {() => void} [opts.onAttempt] called before every attempt
- * @param {Function} [opts.probeFn] the probe implementation (injectable for the tests)
- * @returns {Promise<{hit: boolean, results: object[], fresh: boolean}>}
  */
-export async function waitForMarker(cdpPort, markers = [], opts = {}) {
+export async function waitForMarker(
+  cdpPort: number,
+  markers: string[] = [],
+  opts: WaitForMarkerOptions = {}
+): Promise<{ hit: boolean; results: ProbeResult[]; fresh: boolean }> {
   const {
     timeoutMs = 10_000,
     intervalMs = 500,
@@ -517,9 +588,9 @@ export async function waitForMarker(cdpPort, markers = [], opts = {}) {
   } = opts
 
   const deadline = Date.now() + timeoutMs
-  let results = []
-  let lastError = null
-  let prevSigs = new Map()
+  let results: ProbeResult[] = []
+  let lastError: unknown = null
+  let prevSigs = new Map<string, string>()
   let fresh = false
 
   for (;;) {
@@ -528,7 +599,7 @@ export async function waitForMarker(cdpPort, markers = [], opts = {}) {
       results = await probeFn(cdpPort, markers, { quiet: true })
       lastError = null
 
-      const curSigs = new Map()
+      const curSigs = new Map<string, string>()
       for (const r of results) {
         if (r.error || !r.sig) continue
         curSigs.set(r.key ?? normalizeTargetTitle(r.title), r.sig)
@@ -587,12 +658,8 @@ export async function waitForMarker(cdpPort, markers = [], opts = {}) {
 /**
  * Check whether the DOM of at least one target changed compared to the
  * baseline.
- *
- * @param {object[]} results the probe results
- * @param {Record<string,{sig: string, title: string}>|null} baseline
- * @returns {boolean}
  */
-export function isFresh(results = [], baseline = null) {
+export function isFresh(results: ProbeResult[] = [], baseline: DomBaseline | null = null): boolean {
   if (!baseline) return false
   for (const r of results) {
     if (r.error) continue
@@ -616,14 +683,15 @@ export function isFresh(results = [], baseline = null) {
  * that the view was reloaded even when the content did not change. `marked`
  * records whether the target carried one of the markers before the refresh.
  *
- * @param {number} cdpPort
- * @param {string[]} [markers] the probe markers
- * @returns {Promise<Record<string,{sig: string, title: string, marked: boolean}>|null>} the signatures, or null when no target could be read
+ * @returns the signatures, or null when no target could be read
  */
-export async function captureDomSignature(cdpPort, markers = []) {
+export async function captureDomSignature(
+  cdpPort: number,
+  markers: string[] = []
+): Promise<DomBaseline | null> {
   try {
     const targets = await listCdpTargets(cdpPort)
-    const sigs = {}
+    const sigs: DomBaseline = {}
     for (const t of targets) {
       try {
         const expr = `JSON.stringify({
@@ -632,7 +700,7 @@ export async function captureDomSignature(cdpPort, markers = []) {
         })`
         const r = await cdpEvaluate(t.webSocketDebuggerUrl, expr)
         if (r?.result?.value) {
-          const o = JSON.parse(r.result.value)
+          const o = JSON.parse(r.result.value as string)
           sigs[normalizeTargetTitle(t.title)] = { sig: o.sig, title: t.title, marked: !!o.marked }
         }
       } catch {
