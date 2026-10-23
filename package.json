@@ -4,6 +4,14 @@
   "description": "Hot update tool for uni-app development: automatic build, incremental sync to a real device and runtime refresh",
   "type": "module",
   "license": "LGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MaikoTan/uni-hmr.git"
+  },
+  "homepage": "https://github.com/MaikoTan/uni-hmr#readme",
+  "bugs": {
+    "url": "https://github.com/MaikoTan/uni-hmr/issues"
+  },
   "bin": "dist/uni-hmr.mjs",
   "files": [
     "dist",
